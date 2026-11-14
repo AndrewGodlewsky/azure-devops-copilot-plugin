@@ -23,21 +23,35 @@ Based on the [Microsoft Azure DevOps Copilot Plugin](https://github.com/microsof
 
 ## Installation
 
-### Install Andrew's fork
+These steps install Andrew's fork in the **GitHub Copilot App**. Add the marketplace first, then install its plugin. If the marketplace is already registered, start at step 2.
 
-1. Add this repository as a marketplace in the GitHub Copilot App. Copy this URL into the marketplace source field:
+### 1. Add the marketplace
 
-   ```text
-   https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin
-   ```
+Open **Customize**, then open the marketplace settings beside the marketplace selector. Choose the option to add a marketplace and paste this repository URL into the source field:
 
-2. Select **andrewgodlewsky-azure-devops** from the **andrewgodlewsky-plugins** catalog. If using the **Install plugin** dialog, enter this exact value in **Name**, then choose **Install**:
+```text
+https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin
+```
 
-   ```text
-   andrewgodlewsky-azure-devops@andrewgodlewsky-plugins
-   ```
+Confirm the addition. The marketplace appears as **andrewgodlewsky-plugins**; this name comes from the repository's marketplace manifest.
 
-The repository URL registers the marketplace; the `plugin@marketplace` value installs the plugin from that marketplace. Both steps use Andrew's fork.
+### 2. Install the plugin
+
+In **Customize → Browse**, choose **andrewgodlewsky-plugins**, search for **andrewgodlewsky-azure-devops**, and select **Install**.
+
+If using the **Install plugin** dialog instead, paste this exact value into **Name**, then select **Install**:
+
+```text
+andrewgodlewsky-azure-devops@andrewgodlewsky-plugins
+```
+
+The repository URL belongs in the marketplace source field. The `plugin@marketplace` value belongs in the plugin installation field. Registering the marketplace alone does not install the plugin.
+
+### 3. Enable and open it
+
+Under **Customize → Installed**, make sure **andrewgodlewsky-azure-devops** is enabled. Open its **Azure DevOps** canvas in a Copilot session, sign in when prompted, and use **connections** to select your Azure DevOps organization and project.
+
+For the app's marketplace and plugin controls, see [GitHub's installation instructions](https://docs.github.com/en/copilot/how-tos/github-copilot-app/customize-github-copilot-app#adding-a-plugin-marketplace).
 
 ### If you already installed the original plugin
 
