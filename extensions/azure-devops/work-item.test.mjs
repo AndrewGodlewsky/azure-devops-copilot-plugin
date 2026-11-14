@@ -377,7 +377,7 @@ test("identity fields preserve image URLs for compact work-item metadata", () =>
     assert.equal(item.changedByImageUrl, "https://dev.azure.com/example/changed.png");
 });
 
-test("development artifacts and related work map to navigable sidebar links", () => {
+test("work-item relationships, hyperlinks, and attachments remain while development artifacts are omitted", () => {
     const relatedById = new Map([[
         7,
         {
@@ -390,6 +390,14 @@ test("development artifacts and related work map to navigable sidebar links", ()
             webUrl: "https://dev.azure.com/example/Widgets/_workitems/edit/7",
         },
     ]]);
+    const artifactUrls = [
+        "vstfs:///Git/PullRequestId/project-guid%2Frepo-guid%2F922952",
+        "vstfs:///Git/Ref/project-guid%2Frepo-guid%2FGBmain",
+        "vstfs:///Git/Commit/project-guid%2Frepo-guid%2F2c80c54abc",
+        "vstfs:///Build/Build/1234",
+        "https://dev.azure.com/example/Widgets/_git/repo/pullrequest/81",
+        "unrecognized-artifact",
+    ];
     const item = mapWorkItemDetail({
         id: 42,
         fields: {
@@ -398,64 +406,43 @@ test("development artifacts and related work map to navigable sidebar links", ()
             "System.State": "Active",
         },
         relations: [
-            {
-                rel: "ArtifactLink",
-                url: "vstfs:///Git/PullRequestId/project-guid%2Frepo-guid%2F922952",
-                attributes: { name: "Pull Request", comment: "Fix flaky extension publish" },
-            },
-            {
-                rel: "ArtifactLink",
-                url: "vstfs:///Git/Ref/project-guid%2Frepo-guid%2FGBmaster",
-                attributes: { name: "Branch" },
-            },
-            {
-                rel: "ArtifactLink",
-                url: "vstfs:///Git/Commit/project-guid%2Frepo-guid%2F2c80c54abc",
-                attributes: { name: "Fixed in Commit" },
-            },
-            {
-                rel: "ArtifactLink",
-                url: "vstfs:///Build/Build/1234",
-                attributes: { name: "Integrated in build" },
-            },
+            ...artifactUrls.map((url) => ({
+                rel: "ArtifactLink", url, attributes: { name: "Development artifact" },
+            })),
             {
                 rel: "System.LinkTypes.Related",
                 url: "https://dev.azure.com/example/Widgets/_apis/wit/workItems/7",
             },
+            {
+                rel: "System.LinkTypes.Hierarchy-Reverse",
+                url: "https://dev.azure.com/example/Widgets/_apis/wit/workItems/8",
+            },
+            {
+                rel: "System.LinkTypes.Hierarchy-Forward",
+                url: "https://dev.azure.com/example/Widgets/_apis/wit/workItems/9",
+            },
+            {
+                rel: "Hyperlink", url: "https://example.com/design",
+                attributes: { comment: "Design notes" },
+            },
+            {
+                rel: "AttachedFile",
+                url: "https://dev.azure.com/example/Widgets/_apis/wit/attachments/attachment-id",
+                attributes: { name: "diagram.png", comment: "Architecture diagram" },
+            },
         ],
-    }, [], [], {
-        projectWebUrl: "https://dev.azure.com/example/Widgets",
-        relatedById,
-    });
+    }, [], [], { relatedById });
 
-    const development = item.relations.find((group) => group.name === "Development").links;
-    assert.equal(development[0].projectId, "project-guid");
-    assert.equal(development[0].repositoryId, "repo-guid");
-    assert.deepEqual(
-        development.map((entry) => [entry.kind, entry.label, entry.webUrl]),
-        [
-            [
-                "pull-request",
-                "Pull request 922952",
-                "https://dev.azure.com/example/project-guid/_git/repo-guid/pullrequest/922952",
-            ],
-            [
-                "branch",
-                "master",
-                "https://dev.azure.com/example/project-guid/_git/repo-guid?version=GBmaster",
-            ],
-            [
-                "commit",
-                "Commit 2c80c54a",
-                "https://dev.azure.com/example/project-guid/_git/repo-guid/commit/2c80c54abc",
-            ],
-            [
-                "build",
-                "Build 1234",
-                "https://dev.azure.com/example/Widgets/_build/results?buildId=1234&view=results",
-            ],
-        ],
-    );
+    assert.deepEqual(item.relations.map((group) => group.name), [
+        "Parent", "Children", "Related", "Links", "Attachments",
+    ]);
+    assert.equal(item.relations.flatMap((group) => group.links).length, 5);
+    const parent = item.relations.find((group) => group.name === "Parent").links[0];
+    const child = item.relations.find((group) => group.name === "Children").links[0];
+    assert.equal(parent.id, 8);
+    assert.equal(child.id, 9);
+    assert.equal(child.label, "Work item 9");
+    assert.equal(child.kind, "work-item");
 
     const related = item.relations.find((group) => group.name === "Related").links[0];
     assert.equal(related.id, 7);
@@ -463,4 +450,12 @@ test("development artifacts and related work map to navigable sidebar links", ()
     assert.equal(related.changedDate, "2026-08-06T12:00:00Z");
     assert.equal(related.project, "Service Platform");
     assert.equal(related.webUrl, "https://dev.azure.com/example/Widgets/_workitems/edit/7");
+
+    const hyperlink = item.relations.find((group) => group.name === "Links").links[0];
+    assert.equal(hyperlink.label, "Design notes");
+    assert.equal(hyperlink.webUrl, "https://example.com/design");
+    const attachment = item.relations.find((group) => group.name === "Attachments").links[0];
+    assert.equal(attachment.label, "diagram.png");
+    assert.equal(attachment.title, "Architecture diagram");
+    assert.equal(attachment.webUrl, "https://dev.azure.com/example/Widgets/_apis/wit/attachments/attachment-id");
 });

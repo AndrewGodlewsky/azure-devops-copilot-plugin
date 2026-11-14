@@ -1,10 +1,6 @@
 // Run with: node --test connection.test.mjs
 //
-// The connection module is the answer to "which Azure DevOps organization does
-// this canvas read from", which used to be answerable only by the workspace's
-// git remote. These tests cover the store, the precedence rules, and the
-// selector check that keeps a request from reaching an organization the canvas
-// never resolved.
+// Covers saved organization/project selections, input precedence, and selectors.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
@@ -70,15 +66,6 @@ function withHome() {
     return { home, path: join(home, ".copilot", "azure-devops-canvas", "connection.json") };
 }
 
-const remote = (organization, project) => ({
-    isAzureDevOps: true,
-    organization,
-    project,
-    repository: "repo",
-    remoteName: "origin",
-    remoteUrl: `https://dev.azure.com/${organization}/${project}/_git/repo`,
-});
-
 test("an organization is the only thing a connection needs", async () => {
     const { home } = withHome();
     const { normalizeConnection } = await loadConnection(home);
@@ -87,7 +74,7 @@ test("an organization is the only thing a connection needs", async () => {
     const normalized = normalizeConnection({ organization: "contoso" });
     assert.equal(normalized.organization, "contoso");
     assert.equal(normalized.project, "");
-    assert.equal(normalized.repositoryId, "");
+    assert.equal(Object.hasOwn(normalized, "repositoryId"), false);
     assert.equal(normalizeConnection({ project: "widgets" }), null, "a project alone names no organization");
     assert.equal(normalizeConnection(null), null);
 });
@@ -95,18 +82,13 @@ test("an organization is the only thing a connection needs", async () => {
 test("org is accepted as an alias for organization, matching the canvas input schema", async () => {
     const { home } = withHome();
     const { normalizeConnection } = await loadConnection(home);
-    assert.equal(normalizeConnection({ org: "contoso", repository: "repo" }).organization, "contoso");
-    assert.equal(normalizeConnection({ org: "contoso", repository: "repo" }).repositoryId, "repo");
+    assert.equal(normalizeConnection({ org: "contoso" }).organization, "contoso");
 });
 
-test("identity is organization and project, and ignores case and repository", async () => {
+test("identity is organization and project, and ignores case", async () => {
     const { home } = withHome();
     const { sameConnection } = await loadConnection(home);
     assert.ok(sameConnection({ organization: "Contoso", project: "Widgets" }, { organization: "contoso", project: "widgets" }));
-    assert.ok(
-        sameConnection({ organization: "contoso", repositoryId: "a" }, { organization: "contoso", repositoryId: "b" }),
-        "two repositories in one project show the same work items, so they are one connection",
-    );
     assert.ok(!sameConnection({ organization: "contoso", project: "widgets" }, { organization: "contoso" }));
 });
 
@@ -154,7 +136,7 @@ test("clearing the connection preference removes all saved connection state", as
         readConnectionPreference,
     } = await loadConnection(home);
     writeConnectionPreference(
-        { organization: "fabrikam", project: "widgets", repositoryId: "widgets-api" },
+        { organization: "fabrikam", project: "widgets" },
         { isDefault: true },
     );
 
@@ -174,28 +156,17 @@ test("a missing or corrupt record reads as the first-run state rather than throw
     assert.equal(readConnectionPreference().default, null);
 });
 
-test("with no remote and no saved connection there is nothing to read from", async () => {
+test("without an input or saved connection there is nothing to read from", async () => {
     const { home } = withHome();
     const { resolveConnections } = await loadConnection(home);
-    assert.equal(resolveConnections({ remote: null }).length, 0);
+    assert.equal(resolveConnections().length, 0);
 });
 
-test("a detected Azure DevOps remote is the connection when nothing is saved", async () => {
-    const { home } = withHome();
-    const { resolveConnections } = await loadConnection(home);
-    const [connection, ...rest] = resolveConnections({ remote: remote("contoso", "widgets") });
-    assert.equal(rest.length, 0);
-    assert.equal(connection.source, "remote");
-    assert.equal(connection.organization, "contoso");
-    assert.equal(connection.project, "widgets");
-    assert.equal(connection.repositoryId, "repo");
-});
-
-test("a saved connection is the connection when there is no remote", async () => {
+test("a saved selection supplies the connection", async () => {
     const { home } = withHome();
     const { resolveConnections, writeConnectionPreference } = await loadConnection(home);
     writeConnectionPreference({ organization: "fabrikam" });
-    const connections = resolveConnections({ remote: null });
+    const connections = resolveConnections();
     assert.equal(connections.length, 1);
     assert.equal(connections[0].source, "last-used");
     assert.equal(connections[0].organization, "fabrikam");
@@ -207,7 +178,7 @@ test("choosing a connection while a default is pinned shows the choice, and keep
     const { resolveConnections, writeConnectionPreference } = await loadConnection(home);
     writeConnectionPreference({ organization: "fabrikam" }, { isDefault: true });
     writeConnectionPreference({ organization: "contoso" });
-    const connections = resolveConnections({ remote: null });
+    const connections = resolveConnections();
     // Returning only the default here made an explicit selection look like it had
     // not been saved: the record changed and nothing on screen did.
     assert.equal(
@@ -222,42 +193,10 @@ test("pinning a connection leaves one entry, since it is also the last one used"
     const { home } = withHome();
     const { resolveConnections, writeConnectionPreference } = await loadConnection(home);
     writeConnectionPreference({ organization: "fabrikam" }, { isDefault: true });
-    const connections = resolveConnections({ remote: null });
+    const connections = resolveConnections();
     assert.equal(connections.length, 1);
     assert.equal(connections[0].organization, "fabrikam");
     assert.equal(connections[0].isDefault, true);
-});
-
-test("a remote ranks above a default, and the default is still included", async () => {
-    const { home } = withHome();
-    const { resolveConnections, writeConnectionPreference } = await loadConnection(home);
-    writeConnectionPreference({ organization: "fabrikam", project: "boxes" }, { isDefault: true });
-    const connections = resolveConnections({ remote: remote("contoso", "widgets") });
-    assert.equal(
-        connections.map((c) => `${c.source}:${c.organization}`).join(", "),
-        "remote:contoso, default:fabrikam",
-    );
-});
-
-test("a repository change is stored and resolved back", async () => {
-    const { home } = withHome();
-    const { resolveConnections, writeConnectionPreference } = await loadConnection(home);
-    writeConnectionPreference({ organization: "fabrikam", project: "widgets", repositoryId: "widgets-api" });
-    assert.equal(resolveConnections({ remote: null })[0].repositoryId, "widgets-api");
-    writeConnectionPreference({ organization: "fabrikam", project: "widgets", repositoryId: "other-repo" });
-    const connections = resolveConnections({ remote: null });
-    assert.equal(connections.length, 1, "same organization and project, so it replaces rather than stacks");
-    assert.equal(connections[0].repositoryId, "other-repo");
-});
-
-test("a default that matches the remote collapses into it rather than showing twice", async () => {
-    const { home } = withHome();
-    const { resolveConnections, writeConnectionPreference } = await loadConnection(home);
-    writeConnectionPreference({ organization: "contoso", project: "widgets" }, { isDefault: true });
-    const connections = resolveConnections({ remote: remote("Contoso", "Widgets") });
-    assert.equal(connections.length, 1);
-    assert.equal(connections[0].source, "remote");
-    assert.equal(connections[0].isDefault, true, "the collapsed connection is still reported as pinned");
 });
 
 test("canvas input wins outright, so a deep link is unaffected by a saved connection", async () => {
@@ -266,28 +205,17 @@ test("canvas input wins outright, so a deep link is unaffected by a saved connec
     writeConnectionPreference({ organization: "fabrikam" }, { isDefault: true });
     const connections = resolveConnections({
         input: { organization: "northwind", project: "shipping" },
-        remote: remote("contoso", "widgets"),
     });
     assert.equal(connections.length, 1);
     assert.equal(connections[0].source, "input");
     assert.equal(connections[0].organization, "northwind");
 });
 
-test("input that matches the remote keeps the remote attached for repository matching", async () => {
-    const { home } = withHome();
-    const { resolveConnections } = await loadConnection(home);
-    const detected = remote("contoso", "widgets");
-    const [matching] = resolveConnections({ input: { organization: "contoso", project: "widgets" }, remote: detected });
-    assert.equal(matching.remote, detected);
-    const [different] = resolveConnections({ input: { organization: "northwind", project: "widgets" }, remote: detected });
-    assert.equal(different.remote, null, "a remote from another organization can only mislead repository matching");
-});
-
 test("a request may only name a connection the canvas resolved", async () => {
     const { home } = withHome();
     const { resolveConnections, selectConnection, writeConnectionPreference } = await loadConnection(home);
     writeConnectionPreference({ organization: "fabrikam", project: "boxes" }, { isDefault: true });
-    const connections = resolveConnections({ remote: remote("contoso", "widgets") });
+    const connections = resolveConnections();
 
     assert.equal(selectConnection(connections, { organization: "fabrikam", project: "boxes" }).source, "default");
     assert.equal(
@@ -297,7 +225,7 @@ test("a request may only name a connection the canvas resolved", async () => {
     );
     assert.equal(
         selectConnection(connections, {}).source,
-        "remote",
+        "default",
         "a request that names nothing gets the primary connection",
     );
 });
@@ -318,4 +246,23 @@ test("a connection that could not be written is reported, not reported as saved"
         () => clearConnectionDefault(),
         (error) => error.code === "azure_devops_connection_write_failed",
     );
+});
+
+test("legacy repository fields are ignored while saved organization and project survive", async () => {
+    const { home, path } = withHome();
+    mkdirSync(dirname(path), { recursive: true });
+    const legacy = { organization: "fabrikam", project: "widgets", repositoryId: "legacy-repo" };
+    writeFileSync(path, JSON.stringify({ version: 1, default: legacy, lastUsed: legacy }));
+    const { readConnectionPreference, resolveConnections, writeConnectionPreference } = await loadConnection(home);
+    const record = readConnectionPreference();
+    for (const connection of [record.default, record.lastUsed, ...resolveConnections()]) {
+        assert.equal(connection.organization, "fabrikam");
+        assert.equal(connection.project, "widgets");
+        assert.equal(Object.hasOwn(connection, "repositoryId"), false);
+        assert.equal(Object.hasOwn(connection, "remote"), false);
+    }
+    writeConnectionPreference({ ...legacy, repository: "also-legacy" });
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    assert.deepEqual(saved.lastUsed, { organization: "fabrikam", project: "widgets" });
+    assert.deepEqual(saved.default, { organization: "fabrikam", project: "widgets" });
 });

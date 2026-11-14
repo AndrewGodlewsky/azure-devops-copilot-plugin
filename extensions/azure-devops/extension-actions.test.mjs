@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { SourceTextModule, SyntheticModule, createContext } from "node:vm";
+import { hasWorkItemReference } from "./work-item.mjs";
 
 const source = readFileSync(new URL("./extension.mjs", import.meta.url), "utf8");
 const hasPreviewFeatures = source.includes("\"./azdo-board.mjs\"");
@@ -40,16 +41,15 @@ async function loadExtension({ failBoardCleanup = false, failDelegationCleanup =
         { context },
     );
     const server = new SyntheticModule(
-        ["canvasTitle", "hasPullRequestReference", "serializeCanvasInput", "setCopilotSession", "startServer"],
+        ["canvasTitle", "serializeCanvasInput", "setCopilotSession", "startServer"],
         function initialize() {
             this.setExport("canvasTitle", () => "Azure DevOps");
-            this.setExport("hasPullRequestReference", () => false);
             this.setExport("serializeCanvasInput", JSON.stringify);
             this.setExport("setCopilotSession", () => {});
             this.setExport("startServer", async (_instanceId, _input, handlers) => {
                 lifecycle = handlers;
                 return {
-                    input: {},
+                    input: _input,
                     url: "http://127.0.0.1/",
                     closeBoards: async () => {
                         if (failBoardCleanup) throw new Error("board cleanup failed");
@@ -68,7 +68,7 @@ async function loadExtension({ failBoardCleanup = false, failDelegationCleanup =
     const workItem = new SyntheticModule(
         ["hasWorkItemReference"],
         function initialize() {
-            this.setExport("hasWorkItemReference", () => false);
+            this.setExport("hasWorkItemReference", hasWorkItemReference);
         },
         { context },
     );
@@ -130,35 +130,47 @@ async function loadExtension({ failBoardCleanup = false, failDelegationCleanup =
             });
             return opened;
         },
-        open: async () => declaration.open(canvasContext),
+        open: async (input = {}) => declaration.open({ ...canvasContext, input }),
         close: async () => declaration.onClose(canvasContext),
         serverClosed: () => serverClosed,
     };
 }
 
-test("navigation and board actions are exposed", async () => {
+test("only work-item navigation and board actions are exposed", async () => {
     const { declaration } = await loadExtension();
     assert.deepEqual(
         Array.from(declaration.actions, (action) => action.name),
         hasPreviewFeatures
-            ? ["show_ado_pull_request", "show_ado_work_item", "refresh_board"]
-            : ["show_ado_pull_request", "show_ado_work_item"],
+            ? ["show_ado_work_item", "refresh_board"]
+            : ["show_ado_work_item"],
     );
+    assert.equal(declaration.id, "azure-devops");
+    assert.equal(declaration.displayName, "Azure DevOps");
+    assert.equal(declaration.inputSchema.additionalProperties, false);
+    assert.deepEqual(Object.keys(declaration.inputSchema.properties), [
+        "workItemUrl", "organization", "org", "project", "workItemId",
+    ]);
+    assert.deepEqual(structuredClone(declaration.inputSchema.anyOf), [
+        { maxProperties: 0 },
+        { required: ["workItemUrl"] },
+        { required: ["organization", "project", "workItemId"] },
+        { required: ["org", "project", "workItemId"] },
+    ]);
 });
 
 test("navigation actions reopen the canvas from URLs or organization references", async () => {
     const { invoke } = await loadExtension();
 
     assert.deepEqual(
-        structuredClone(await invoke("show_ado_pull_request", {
-            url: "https://dev.azure.com/contoso/project/_git/repo/pullrequest/42",
+        structuredClone(await invoke("show_ado_work_item", {
+            url: "https://dev.azure.com/contoso/project/_workitems/edit/42",
         })),
         {
             extensionId: "test:azure-devops",
             canvasId: "azure-devops",
             instanceId: "ado-1",
             input: {
-                pullRequestUrl: "https://dev.azure.com/contoso/project/_git/repo/pullrequest/42",
+                workItemUrl: "https://dev.azure.com/contoso/project/_workitems/edit/42",
             },
         },
     );
@@ -179,6 +191,14 @@ test("navigation actions reopen the canvas from URLs or organization references"
             },
         },
     );
+});
+
+test("canvas status distinguishes the home view from work-item detail", async () => {
+    const { open, close } = await loadExtension();
+    assert.equal((await open()).status, "My work");
+    assert.equal((await open({ workItemUrl: "https://dev.azure.com/contoso/project/_workitems/edit/42" })).status, "Work Item");
+    assert.equal((await open({ organization: "contoso", project: "project", workItemId: 42 })).status, "Work Item");
+    await close();
 });
 
 test("canvas cleanup closes the server after board and delegation failures", async () => {

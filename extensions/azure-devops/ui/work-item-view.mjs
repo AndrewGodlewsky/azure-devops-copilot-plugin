@@ -115,15 +115,9 @@ function relationIcon(kind) {
     return icon;
 }
 
-function relationTarget(entry, onOpenWorkItem, onOpenPullRequest) {
+function relationTarget(entry, onOpenWorkItem) {
     let target;
-    const pullRequestId = entry.kind === "pull-request" ? Number(entry.identifier) : 0;
-    const hasPullRequestTarget = Boolean(entry.projectId && entry.repositoryId);
-    if (Number.isInteger(pullRequestId) && pullRequestId > 0 && hasPullRequestTarget && onOpenPullRequest) {
-        target = element("button", "primer-link relation-link");
-        target.type = "button";
-        target.addEventListener("click", () => onOpenPullRequest(entry));
-    } else if (entry.id && onOpenWorkItem) {
+    if (entry.id && onOpenWorkItem) {
         target = element("button", "primer-link relation-link");
         target.type = "button";
         target.addEventListener("click", () => onOpenWorkItem(entry));
@@ -140,29 +134,26 @@ function relationTarget(entry, onOpenWorkItem, onOpenPullRequest) {
     return target;
 }
 
-function relationRow(entry, groupName, onOpenWorkItem, onOpenPullRequest, development = false) {
+function relationRow(entry, groupName, onOpenWorkItem) {
     const row = element("article", "relation-row");
     const content = element("div", "relation-row-content");
     const metadata = [
-        development ? entry.kindLabel : groupName,
+        groupName,
         entry.state,
         relativeTime(entry.changedDate),
     ].filter(Boolean);
     const meta = metadata.length
-        ? element("div", development ? "relation-kind" : "relation-meta", metadata.join(" · "))
+        ? element("div", "relation-meta", metadata.join(" · "))
         : null;
-    if (development && meta) {
-        content.append(meta);
-    }
-    content.append(relationTarget(entry, onOpenWorkItem, onOpenPullRequest));
-    if (!development && meta) {
+    content.append(relationTarget(entry, onOpenWorkItem));
+    if (meta) {
         content.append(meta);
     }
     row.append(relationIcon(entry.kind), content);
     return row;
 }
 
-function relationsSection(title, groups, onOpenWorkItem, { development = false, children = false, onOpenPullRequest } = {}) {
+function relationsSection(title, groups, onOpenWorkItem, { children = false } = {}) {
     const entries = groups.flatMap((group) =>
         (group.links || []).map((entry) => ({ entry, groupName: group.name })));
     if (!entries.length) {
@@ -170,7 +161,7 @@ function relationsSection(title, groups, onOpenWorkItem, { development = false, 
     }
     const className = children
         ? "child-work-section"
-        : `work-item-sidebar-card ${development ? "development-section" : "related-work-section"}`;
+        : "work-item-sidebar-card related-work-section";
     const card = element("section", `work-item-card ${className}`);
     const header = element("div", "work-item-card-header");
     header.append(
@@ -181,7 +172,7 @@ function relationsSection(title, groups, onOpenWorkItem, { development = false, 
 
     const list = element("div", "relation-list");
     for (const { entry, groupName } of entries.slice(0, 6)) {
-        list.append(relationRow(entry, groupName, onOpenWorkItem, onOpenPullRequest, development));
+        list.append(relationRow(entry, groupName, onOpenWorkItem));
     }
     card.append(list);
 
@@ -190,7 +181,7 @@ function relationsSection(title, groups, onOpenWorkItem, { development = false, 
         overflow.append(element("summary", "primer-link relation-show-more", `Show ${entries.length - 6} more`));
         const overflowList = element("div", "relation-list relation-list-overflow");
         for (const { entry, groupName } of entries.slice(6)) {
-            overflowList.append(relationRow(entry, groupName, onOpenWorkItem, onOpenPullRequest, development));
+            overflowList.append(relationRow(entry, groupName, onOpenWorkItem));
         }
         overflow.append(overflowList);
         card.append(overflow);
@@ -540,7 +531,7 @@ function templateSection(item, section, options, fields, { sidebar = false } = {
  *
  * @param {Element} container
  * @param {object} item mapped work item detail
- * @param {{ avatarUrl?: (url: string) => string, canEdit?: boolean, editMode?: boolean, onOpenWorkItem?: (item: { id: number, project?: string }) => void, onOpenPullRequest?: (relation: { identifier: string, projectId: string, repositoryId: string }) => void, onEdit?: () => void, onCancelEdit?: () => void, onSave?: (fields: object[]) => Promise<void>, onDirtyChange?: (dirty: boolean) => void, onSubmit?: () => void, onDelegateLocal?: () => void, delegationPending?: boolean, delegationStatus?: string, delegationError?: string }} options
+ * @param {{ avatarUrl?: (url: string) => string, canEdit?: boolean, editMode?: boolean, onOpenWorkItem?: (item: { id: number, project?: string }) => void, onEdit?: () => void, onCancelEdit?: () => void, onSave?: (fields: object[]) => Promise<void>, onDirtyChange?: (dirty: boolean) => void, onSubmit?: () => void, onDelegateLocal?: () => void, delegationPending?: boolean, delegationStatus?: string, delegationError?: string }} options
  */
 export function renderWorkItem(container, item, options = {}) {
     container.replaceChildren();
@@ -653,22 +644,13 @@ export function renderWorkItem(container, item, options = {}) {
     mainColumn.append(discussionSection(item, options));
     body.append(mainColumn);
 
-    const developmentGroups = (item.relations || []).filter((group) => group.name === "Development");
     const relatedGroups = (item.relations || []).filter((group) => group.name !== "Development" && group.name !== "Children");
     const sidebar = element("aside", "work-item-sidebar");
-    const development = relationsSection(
-        "Development",
-        developmentGroups,
-        options.onOpenWorkItem,
-        { development: true, onOpenPullRequest: options.onOpenPullRequest },
-    );
     const related = relationsSection(
         "Related work",
         relatedGroups,
         options.onOpenWorkItem,
-        { onOpenPullRequest: options.onOpenPullRequest },
     );
-    if (development) sidebar.append(development);
     if (related) sidebar.append(related);
     for (const section of sidebarSections) {
         sidebar.append(templateSection(item, section, options, fields, { sidebar: true }));

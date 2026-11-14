@@ -8,13 +8,12 @@ const icons = {
     task: "M5 3H3v11h10V3h-2M6 2h4v3H6ZM5 9l2 2 4-4",
     story: "M8 4C6 2 3 2 1 3v10c2-1 5-1 7 1 2-2 5-2 7-1V3c-2-1-5-1-7 1Zm0 0v10",
     bug: "M5 7h6v4a3 3 0 0 1-6 0Zm1-3h4v3H6ZM3 8h2m6 0h2M3 11h2m6 0h2M4 14l2-2m4 0 2 2",
-    "pull-request": "M4 4v8m7-8v3c0 2 2 2 2 4v1M9 5l2-2 2 2M2 2h4v3H2Zm0 10h4v3H2Zm9 0h4v3h-4Z",
     board: "M2 2h12v12H2Zm4 0v12m4-12v12",
     close: "m4 4 8 8M12 4l-8 8",
 };
 
 export function renderNavigation(container, options) {
-    const { tabs, activeTabId, collapsed, sameEntry, tabTitle, isBranchPullRequestTab,
+    const { tabs, activeTabId, collapsed, sameEntry, tabTitle,
         onActivate, onOpenChild, onClose, revealActive = false } = options;
     const doc = container.ownerDocument;
     const focusedKey = container.contains(doc.activeElement) ? doc.activeElement.dataset.focusKey : null;
@@ -136,13 +135,6 @@ export function renderNavigation(container, options) {
         copy.append(element("span", "navigation-title", title));
         if (entry.view !== "home") copy.append(element("span", "navigation-meta", [shortTitle, state].filter(Boolean).join(" · ")));
         label.append(leading, copy);
-        if (tab && isBranchPullRequestTab(tab)) {
-            const badge = element("span", "view-tab-branch");
-            badge.setAttribute("role", "img");
-            badge.setAttribute("aria-label", "current branch");
-            label.append(badge);
-            label.setAttribute("aria-label", `${label.getAttribute("aria-label")}, current branch`);
-        }
         row.append(label);
         if (tab?.closable) {
             const close = element("button", "view-tab-close");
@@ -159,7 +151,7 @@ export function renderNavigation(container, options) {
         return li;
     };
     container.replaceChildren();
-    for (const [name, views] of [["", ["home"]], ["Open work", ["work-item"]], ["Pull requests", ["pull-request"]], ["Boards", ["board"]]]) {
+    for (const [name, views] of [["", ["home"]], ["Open work", ["work-item"]], ["Boards", ["board"]]]) {
         const items = nodes.filter(node => views.includes(node.entry.view));
         if (!items.length) continue;
         const group = element("div", "navigation-group");

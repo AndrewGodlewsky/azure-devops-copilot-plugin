@@ -1,16 +1,5 @@
-// The connection picker: where a user chooses the Azure DevOps organization the
-// canvas reads from when the workspace has no Azure DevOps git remote to derive
-// one from.
-//
-// Organization is the only required field. Azure DevOps answers work item and
-// repository queries at organization scope, so asking for a project up front
-// would demand more than the data needs. Pull requests are the exception —
-// Azure DevOps has no organization-wide pull request route — so the form says
-// so rather than letting a user discover it as an empty section.
-//
-// The panel is built once and then patched. Re-rendering it on every change
-// would destroy the field the user is typing in, and would destroy the Save
-// button between its mousedown and its mouseup, swallowing the click.
+// Choose an organization and optional project for Azure Boards work items.
+// The panel is built once and patched to preserve focus and pending input.
 
 function element(tagName, className, text) {
     const node = document.createElement(tagName);
@@ -24,7 +13,6 @@ function connectionLabel(connection) {
 }
 
 function sourceLabel(connection) {
-    if (connection.isRemote) return "from this repository's git remote";
     if (connection.source === "default") return "your default";
     if (connection.source === "input") return "opened directly";
     return "last used";
@@ -169,17 +157,11 @@ export function renderConnectionPanel(container, state, handlers) {
     const project = field(
         "connectionProjects",
         "Project",
-        "Optional. Azure DevOps has no organization-wide pull request list, so without a project this connection shows work items only.",
+        "Optional. Leave blank to see work items across the organization.",
         { onInput: (value) => onDraftChange({ project: value }) },
     );
-    const repository = field(
-        "connectionRepositories",
-        "Repository",
-        "Optional. Narrows pull requests to one repository instead of the whole project.",
-        { onInput: (value) => onDraftChange({ repositoryId: value }) },
-    );
     organization.input.placeholder = "contoso";
-    form.append(organization.wrapper, project.wrapper, repository.wrapper);
+    form.append(organization.wrapper, project.wrapper);
 
     const pin = element("label", "connection-toggle");
     const pinInput = element("input");
@@ -191,7 +173,7 @@ export function renderConnectionPanel(container, state, handlers) {
         element(
             "span",
             "connection-field-hint",
-            "A default is always included, even when a different organization is active or the repository has its own Azure DevOps remote.",
+            "A default is always included, even when a different organization is active.",
         ),
     );
     form.append(pin);
@@ -222,7 +204,6 @@ export function renderConnectionPanel(container, state, handlers) {
             organizations = [],
             organizationsError = "",
             projects = [],
-            repositories = [],
             draft = {},
             loading = "",
             error: errorText = "",
@@ -233,8 +214,8 @@ export function renderConnectionPanel(container, state, handlers) {
 
         title.textContent = firstRun ? "Connect to Azure DevOps" : "Azure DevOps connection";
         intro.textContent = firstRun
-            ? "No Azure DevOps remote was detected in this session. Choose an organization to see your pull requests and work items anyway."
-            : "Choose the organization this canvas reads from. A detected Azure DevOps remote is always shown first, then whatever you choose here, with your default below that.";
+            ? "Choose an organization to see your Azure Boards work items."
+            : "Choose the organization this canvas reads from. Your default organization is also included.";
 
         current.replaceChildren();
         current.hidden = !connections.length;
@@ -258,7 +239,6 @@ export function renderConnectionPanel(container, state, handlers) {
         for (const [node, value] of [
             [organization.input, draft.organization || ""],
             [project.input, draft.project || ""],
-            [repository.input, draft.repositoryId || ""],
         ]) {
             if (node.value !== value) {
                 node.value = value;
@@ -268,15 +248,12 @@ export function renderConnectionPanel(container, state, handlers) {
 
         organization.setOptions(organizations);
         project.setOptions(projects);
-        repository.setOptions(repositories);
         organization.hintNode.textContent = organizationsError
             ? `Could not list your organizations (${organizationsError}). Type the name instead.`
             : "Required.";
 
         project.input.disabled = !draft.organization;
-        repository.input.disabled = !draft.organization;
         project.input.placeholder = loading === "options" ? "Loading projects..." : "Optional";
-        repository.input.placeholder = loading === "options" ? "Loading repositories..." : "Optional";
 
         error.textContent = errorText;
         error.hidden = !errorText;
@@ -295,7 +272,6 @@ export function renderConnectionPanel(container, state, handlers) {
     const read = () => ({
         organization: organization.input.value.trim(),
         project: project.input.value.trim(),
-        repositoryId: repository.input.value.trim(),
         isDefault: pinInput.checked,
     });
     return { update, read };

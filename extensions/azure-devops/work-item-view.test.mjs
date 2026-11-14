@@ -155,6 +155,8 @@ test("a lone field named after its section is labelled once", needsDom, () => {
 
 test("renders a grouped overview and Primer-style content cards", needsDom, () => {
     const host = render(workItem({
+        typeColor: "CC293D",
+        stateColor: "007ACC",
         assignedToImageUrl: "https://dev.azure.com/example/avatar.png",
         reason: "Work started",
         area: "Widgets / Canvas",
@@ -200,12 +202,13 @@ test("renders a grouped overview and Primer-style content cards", needsDom, () =
     assert.equal(overview.querySelector(".work-item-title a"), null, "title is not the external action");
     assert.equal(overview.querySelector(".work-item-reference").textContent, "#42");
     assert.ok(overview.querySelector(".work-item-type"));
+    assert.equal(overview.querySelector(".work-item-type").style.getPropertyValue("--type-color"), "#CC293D");
     assert.equal(overview.querySelector(".state-pill"), null, "state belongs in the details panel");
     assert.equal(overview.querySelector(".work-item-open-button"), null);
 
     assert.ok(host.querySelector(".work-item-title-row > .inline-edit"));
     assert.ok(host.querySelector(".work-item-meta-avatar .identity-avatar-image"));
-    assert.equal(host.querySelectorAll(".work-item-card").length, 5);
+    assert.equal(host.querySelectorAll(".work-item-card").length, 4);
     assert.deepEqual(
         [...host.querySelectorAll(".work-item-details dt")].map((node) => node.textContent),
         ["State", "Reason", "Area", "Iteration"],
@@ -213,6 +216,7 @@ test("renders a grouped overview and Primer-style content cards", needsDom, () =
     );
     assert.doesNotMatch(host.querySelector(".work-item-details").textContent, /Priority/);
     assert.ok(host.querySelector(".work-item-details .state-pill"));
+    assert.equal(host.querySelector(".state-pill").style.getPropertyValue("--state-color"), "#007ACC");
     assert.deepEqual(
         [...host.querySelectorAll(".work-item-details .detail-value")].map((node) => node.title),
         ["Active", "Work started", "Widgets / Canvas", "Sprint 12"],
@@ -224,25 +228,13 @@ test("renders a grouped overview and Primer-style content cards", needsDom, () =
         host.querySelector(".work-item-main-column .template-section .section-title").textContent,
         "Description",
     );
-    assert.ok(host.querySelector(".work-item-sidebar .development-section"));
+    assert.equal(host.querySelector(".development-section"), null);
+    assert.doesNotMatch(host.textContent, /Pull request 81|Polish the layout/);
     assert.ok(host.querySelector(".work-item-sidebar .related-work-section"));
     assert.deepEqual(
         [...host.querySelectorAll(".work-item-sidebar > section .section-title")].map((node) => node.textContent),
-        ["Development", "Related work", "Planning"],
-        "second-column ADO sections stack below Development and Related work",
-    );
-    assert.equal(
-        host.querySelector(".development-section .relation-link").href,
-        "https://dev.azure.com/o/p/_git/r/pullrequest/81",
-    );
-    assert.equal(
-        host.querySelector(".development-section .relation-link").title,
-        "Pull request 81 Polish the layout",
-    );
-    assert.deepEqual(
-        [...host.querySelector(".development-section .relation-row-content").children].map((node) => node.className),
-        ["relation-kind", "primer-link relation-link"],
-        "development rows stay within two text lines",
+        ["Related work", "Planning"],
+        "second-column ADO sections stack below related work",
     );
     assert.ok(host.querySelector(".related-work-section .relation-link.primer-link"));
     assert.deepEqual(
@@ -252,56 +244,50 @@ test("renders a grouped overview and Primer-style content cards", needsDom, () =
     );
 });
 
-test("pull request relations use canvas navigation when it is available", needsDom, () => {
-    let openedPullRequest = 0;
+test("external hyperlinks and attachments retain their destinations", needsDom, () => {
+    let openedWorkItem = false;
     const host = render(workItem({
-        relations: [{
-            name: "Development",
-            links: [{
-                id: 0,
-                kind: "pull-request",
-                kindLabel: "Pull request",
-                projectId: "project-id",
-                repositoryId: "repository-id",
-                identifier: "81",
-                label: "Pull request 81",
-                title: "Polish the layout",
-                webUrl: "https://dev.azure.com/o/p/_git/r/pullrequest/81",
-            }],
-        }],
-    }), {
-        onOpenPullRequest(relation) {
-            openedPullRequest = relation;
-        },
-    });
-    const target = host.querySelector(".development-section .relation-link");
+        relations: [
+            {
+                name: "Links",
+                links: [{ id: 0, kind: "link", label: "Design notes", webUrl: "https://example.com/design" }],
+            },
+            {
+                name: "Attachments",
+                links: [{
+                    id: 0, kind: "attachment", label: "diagram.png",
+                    webUrl: "https://dev.azure.com/example/Widgets/_apis/wit/attachments/attachment-id",
+                }],
+            },
+        ],
+    }), { onOpenWorkItem() { openedWorkItem = true; } });
 
-    assert.equal(target?.tagName, "BUTTON");
-    target.click();
-    assert.equal(openedPullRequest.identifier, "81");
-    assert.equal(openedPullRequest.projectId, "project-id");
-    assert.equal(openedPullRequest.repositoryId, "repository-id");
+    const links = [...host.querySelectorAll(".related-work-section .relation-link")];
+    assert.deepEqual(links.map((link) => link.href), [
+        "https://example.com/design",
+        "https://dev.azure.com/example/Widgets/_apis/wit/attachments/attachment-id",
+    ]);
+    assert.deepEqual(links.map((link) => link.tagName), ["A", "A"]);
+    assert.ok(links.every((link) => link.target === "_blank" && link.rel === "noopener noreferrer"));
+    assert.equal(openedWorkItem, false);
 });
 
-test("pull request relations fall back to their Azure DevOps URL without repository context", needsDom, () => {
+test("a legacy development group does not create a sidebar or fallback links", needsDom, () => {
     const host = render(workItem({
         relations: [{
             name: "Development",
             links: [{
                 id: 0,
                 kind: "pull-request",
-                kindLabel: "Pull request",
-                projectId: "project-id",
-                identifier: "81",
                 label: "Pull request 81",
-                webUrl: "https://dev.azure.com/o/p/_git/r/pullrequest/81",
+                webUrl: "https://dev.azure.com/example/Widgets/_git/repo/pullrequest/81",
             }],
         }],
-    }), { onOpenPullRequest() {} });
+    }));
 
-    const target = host.querySelector(".development-section .relation-link");
-    assert.equal(target?.tagName, "A");
-    assert.equal(target?.href, "https://dev.azure.com/o/p/_git/r/pullrequest/81");
+    assert.equal(host.querySelector(".work-item-sidebar"), null);
+    assert.equal(host.querySelector('a[href*="_git"]'), null);
+    assert.doesNotMatch(host.textContent, /Development|Pull request/);
 });
 
 test("omits the sidebar when a work item has no applicable links", needsDom, () => {

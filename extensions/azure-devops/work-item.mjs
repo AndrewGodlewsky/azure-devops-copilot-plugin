@@ -35,7 +35,6 @@ const RELATION_GROUPS = [
     ["System.LinkTypes.Dependency-Reverse", "Predecessors"],
     ["Microsoft.VSTS.Common.Affects-Forward", "Affects"],
     ["Microsoft.VSTS.Common.Affects-Reverse", "Affected by"],
-    ["ArtifactLink", "Development"],
     ["Hyperlink", "Links"],
     ["AttachedFile", "Attachments"],
 ];
@@ -365,149 +364,10 @@ function relationGroupName(rel) {
     return displayFieldName(normalizeString(rel).replace(/-(Forward|Reverse)$/i, "")) || "Links";
 }
 
-// Relation URLs are user-supplied, so a malformed percent sequence must not throw.
-function safeDecode(value) {
-    try {
-        return decodeURIComponent(value);
-    } catch {
-        return value;
-    }
-}
-
-// Artifact links use vstfs: URIs, e.g. vstfs:///Git/PullRequestId/{project}%2F{repo}%2F{id}.
-function artifactReference(url) {
-    const match = /^vstfs:\/{3}([^/]+)\/([^/]+)\/(.+)$/i.exec(normalizeString(url));
-    if (!match) {
-        return null;
-    }
-    const area = match[1].toLowerCase();
-    const type = match[2].toLowerCase();
-    const parts = safeDecode(match[3]).split("/");
-    if (area === "git" && parts.length >= 3) {
-        const [projectId, repositoryId, ...identifierParts] = parts;
-        const rawIdentifier = identifierParts.join("/");
-        if (type === "pullrequestid") {
-            return {
-                kind: "pull-request",
-                kindLabel: "Pull request",
-                projectId,
-                repositoryId,
-                identifier: rawIdentifier,
-                label: `Pull request ${rawIdentifier}`,
-            };
-        }
-        if (type === "commit") {
-            return {
-                kind: "commit",
-                kindLabel: "Commit",
-                projectId,
-                repositoryId,
-                identifier: rawIdentifier,
-                label: `Commit ${rawIdentifier.slice(0, 8)}`,
-            };
-        }
-        if (type === "ref") {
-            const isTag = rawIdentifier.startsWith("GT");
-            const version = /^(?:GB|GT)/.test(rawIdentifier)
-                ? rawIdentifier
-                : `${isTag ? "GT" : "GB"}${rawIdentifier}`;
-            const identifier = version.slice(2).replace(/^refs\/(?:heads|tags)\//, "");
-            return {
-                kind: isTag ? "tag" : "branch",
-                kindLabel: isTag ? "Tag" : "Branch",
-                projectId,
-                repositoryId,
-                identifier,
-                version,
-                label: identifier || (isTag ? "Tag" : "Branch"),
-            };
-        }
-    }
-    if (area === "build" && type === "build") {
-        const identifier = parts.at(-1) || "";
-        return {
-            kind: "build",
-            kindLabel: "Build",
-            identifier,
-            label: identifier ? `Build ${identifier}` : "Build",
-        };
-    }
-    const kindLabel = match[2]
-        .replace(/Id$/i, "")
-        .replace(/([a-z])([A-Z])/g, "$1 $2");
-    const identifier = parts.at(-1) || "";
-    return {
-        kind: "artifact",
-        kindLabel,
-        identifier,
-        label: identifier ? `${kindLabel} ${identifier}` : kindLabel,
-    };
-}
-
-function projectRoot(projectWebUrl, projectId) {
-    try {
-        const url = new URL(normalizeString(projectWebUrl));
-        const hostname = url.hostname.toLowerCase();
-        const segments = url.pathname.split("/").filter(Boolean).map(safeDecode);
-        if (url.protocol !== "https:") {
-            return "";
-        }
-        if (hostname === "dev.azure.com" && segments[0]) {
-            const project = projectId || segments[1];
-            return project
-                ? `${url.origin}/${encodeURIComponent(segments[0])}/${encodeURIComponent(project)}`
-                : "";
-        }
-        if (hostname.endsWith(".visualstudio.com")) {
-            const project = projectId || segments[0];
-            return project ? `${url.origin}/${encodeURIComponent(project)}` : "";
-        }
-    } catch {
-        return "";
-    }
-    return "";
-}
-
-function artifactWebUrl(reference, projectWebUrl) {
-    if (!reference) {
-        return "";
-    }
-    const root = projectRoot(projectWebUrl, reference.projectId);
-    if (!root) {
-        return "";
-    }
-    if (reference.kind === "build" && reference.identifier) {
-        const url = new URL(`${root}/_build/results`);
-        url.searchParams.set("buildId", reference.identifier);
-        url.searchParams.set("view", "results");
-        return url.href;
-    }
-    if (!reference.repositoryId || !reference.identifier) {
-        return "";
-    }
-    const repositoryRoot = `${root}/_git/${encodeURIComponent(reference.repositoryId)}`;
-    if (reference.kind === "pull-request") {
-        return `${repositoryRoot}/pullrequest/${encodeURIComponent(reference.identifier)}`;
-    }
-    if (reference.kind === "commit") {
-        return `${repositoryRoot}/commit/${encodeURIComponent(reference.identifier)}`;
-    }
-    if (reference.kind === "branch" || reference.kind === "tag") {
-        const url = new URL(repositoryRoot);
-        url.searchParams.set("version", reference.version);
-        return url.href;
-    }
-    return "";
-}
-
 function externalLabel(relation) {
     const url = normalizeString(relation.url);
     const name = normalizeString(relation.attributes?.name);
     const comment = normalizeString(relation.attributes?.comment);
-    const artifact = artifactReference(url);
-    if (artifact) {
-        return artifact.label;
-    }
     if (name && name !== "Hyperlink") {
         return name;
     }
@@ -521,7 +381,7 @@ function externalLabel(relation) {
     }
 }
 
-function mapRelation(relation, relatedById, projectWebUrl) {
+function mapRelation(relation, relatedById) {
     const url = normalizeString(relation.url);
     const id = relatedWorkItemId(url);
     const related = id ? relatedById.get(id) : null;
@@ -538,7 +398,6 @@ function mapRelation(relation, relatedById, projectWebUrl) {
             webUrl: related?.webUrl || "",
         };
     }
-    const artifact = artifactReference(url);
     const label = externalLabel(relation);
     const comment = normalizeString(relation.attributes?.comment);
     return {
@@ -547,20 +406,20 @@ function mapRelation(relation, relatedById, projectWebUrl) {
         title: comment === label ? "" : comment,
         state: "",
         changedDate: "",
-        kind: artifact?.kind || (relation.rel === "Hyperlink" ? "link" : "artifact"),
-        kindLabel: artifact?.kindLabel || normalizeString(relation.attributes?.name) || "Link",
-        projectId: artifact?.projectId || "",
-        repositoryId: artifact?.repositoryId || "",
-        identifier: artifact?.identifier || "",
-        webUrl: artifactWebUrl(artifact, projectWebUrl) || (/^https?:\/\//i.test(url) ? url : ""),
+        kind: relation.rel === "AttachedFile" ? "attachment" : "link",
+        kindLabel: normalizeString(relation.attributes?.name) || "Link",
+        webUrl: /^https?:\/\//i.test(url) ? url : "",
     };
 }
 
-function mapRelations(workItem, relatedById, projectWebUrl) {
+function mapRelations(workItem, relatedById) {
     const groups = new Map();
     for (const relation of workItem?.relations || []) {
+        if (relation.rel === "ArtifactLink") {
+            continue;
+        }
         const name = relationGroupName(relation.rel);
-        const entry = mapRelation(relation, relatedById, projectWebUrl);
+        const entry = mapRelation(relation, relatedById);
         // A link with no work item, no destination, and no label is noise.
         if (!entry.id && !entry.webUrl && !entry.label) {
             continue;
@@ -572,11 +431,6 @@ function mapRelations(workItem, relatedById, projectWebUrl) {
         .concat([...groups.keys()])
         .filter((name, index, names) => names.indexOf(name) === index && groups.has(name))
         .map((name) => ({ name, links: groups.get(name) }));
-}
-
-export function mapWorkItemDevelopment(workItem, projectWebUrl = "") {
-    return mapRelations(workItem, new Map(), projectWebUrl)
-        .find((group) => group.name === "Development")?.links || [];
 }
 
 export function mapWorkItem(workItem, typeDefinition = null) {
@@ -601,7 +455,7 @@ export function mapWorkItem(workItem, typeDefinition = null) {
 }
 
 export function mapWorkItemDetail(workItem, comments = [], template = [], options = {}) {
-    const { typeDefinition = null, relatedById = new Map(), projectWebUrl = "" } = options;
+    const { typeDefinition = null, relatedById = new Map() } = options;
     const fields = workItem?.fields || {};
     const selectedFormats = multilineFieldFormats(workItem);
     const assignedTo = personValue(workItem, "System.AssignedTo");
@@ -712,7 +566,7 @@ export function mapWorkItemDetail(workItem, comments = [], template = [], option
         changedByImageUrl: changedBy.imageUrl,
         changedDate: normalizeString(fieldValue(workItem, "System.ChangedDate")),
         details,
-        relations: mapRelations(workItem, relatedById, projectWebUrl),
+        relations: mapRelations(workItem, relatedById),
         templateSections,
         discussion,
         webUrl: normalizeString(workItem?._links?.html?.href),

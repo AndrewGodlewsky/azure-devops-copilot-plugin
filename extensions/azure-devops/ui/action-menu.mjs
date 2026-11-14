@@ -1,7 +1,5 @@
-// The Primer action menu the pull request view uses for the comment filter and
-// for the review and state actions. It lived inline in the comment filter first;
-// it is here so the action menus behave identically rather than approximately,
-// including the roving focus and the outside-pointer close.
+// The Primer action menu used for work-item commands and field choices.
+// Menus share roving focus, viewport positioning, and outside-pointer close.
 
 function element(tagName, className, text) {
     const node = document.createElement(tagName);
@@ -110,7 +108,7 @@ export function createActionMenu({
     };
 
     // The overlay is positioned against the viewport rather than the trigger, so
-    // that a card with `overflow: hidden` (which the reviewer and work item cards
+    // that a card with `overflow: hidden` (which the work item cards
     // need for their rounded corners) cannot clip the menu. The cost is that the
     // position has to be recomputed whenever anything moves.
     const positionOverlay = () => {

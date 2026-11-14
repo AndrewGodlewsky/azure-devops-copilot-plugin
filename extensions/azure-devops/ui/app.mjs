@@ -1,11 +1,9 @@
-import { renderPullRequest } from "./pull-request-view.mjs";
 import { renderWorkItem } from "./work-item-view.mjs";
 import { renderHome } from "./home-view.mjs";
 import { renderNavigation } from "./navigation-view.mjs";
 import { renderConnectionPanel } from "./connection-view.mjs";
 import { AGENCY_AUTH_ENABLED, normalizeFeatureFlags } from "../common.mjs";
 
-const warning = document.getElementById("setupWarning");
 const startupSplash = document.getElementById("startupSplash");
 const startupTitle = document.getElementById("startupTitle");
 const startupDetail = document.getElementById("startupDetail");
@@ -42,15 +40,13 @@ const versionLabel = document.getElementById("versionLabel");
 
 let apiNonce = "";
 let currentConfig;
-let branchPullRequestInfo = null;
-let branchPullRequestId = 0;
 let homeLoaded = false;
 let logs = [];
 let enabledFeatures = normalizeFeatureFlags();
 
 // Each sidebar item keeps an independent detail view and can be closed
 // independently. A tab is { id, entry, panel, content, data, rendered, token,
-// timelineFilter, scrollTop, closable, editMode, dirty }, where entry is the
+// scrollTop, closable, editMode, dirty }, where entry is the
 // { view, id } it shows, editMode is whether the whole detail view is being
 // edited, and dirty tracks whether anything in it has unsaved changes.
 let tabs = [];
@@ -174,35 +170,6 @@ async function request(path, options = {}, includeNonce = true) {
     return data;
 }
 
-function setNotice(message) {
-    warning.hidden = !message;
-    warning.textContent = message || "";
-}
-
-// Not a failure any more, so not styled as one: the canvas works fine without an
-// Azure DevOps remote. It is a note explaining the one thing that is genuinely
-// missing without one, which is the current-branch pull request section.
-function remoteNotice(config) {
-    if (config?.remote?.isAzureDevOps || !(config?.connections || []).length) {
-        return "";
-    }
-    const remoteName = normalizeRemoteName(config?.remote);
-    return remoteName
-        ? `No Azure DevOps remote in this workspace (${remoteName}), so there is no current branch pull request to show.`
-        : "No Azure DevOps remote in this workspace, so there is no current branch pull request to show.";
-}
-
-function normalizeRemoteName(remote) {
-    const url = remote?.remoteUrl || "";
-    // Just the host and path, so the note stays a note rather than a wrapped URL.
-    try {
-        const parsed = new URL(url);
-        return `${parsed.hostname}${parsed.pathname.replace(/\.git$/, "")}`;
-    } catch {
-        return "";
-    }
-}
-
 function showStatus(container, message, retry) {
     container.replaceChildren(element("div", "status", message));
     if (retry) {
@@ -220,37 +187,6 @@ function skeletonCard(lineClasses = []) {
     const card = element("div", "loading-skeleton-card");
     lineClasses.forEach((className) => card.append(skeletonLine(className)));
     return card;
-}
-
-function showPullRequestLoading(container, id) {
-    const shell = element("div", "pr-skeleton");
-    shell.setAttribute("aria-busy", "true");
-    shell.append(createLoadingState(`Loading pull request !${id}`, "", {
-        compact: true,
-    }));
-    const visual = element("div", "pr-skeleton-visual");
-    visual.setAttribute("aria-hidden", "true");
-    const header = element("div", "pr-skeleton-header");
-    header.append(
-        skeletonLine("pr-skeleton-title"),
-        skeletonLine("pr-skeleton-meta"),
-    );
-    const layout = element("div", "pr-skeleton-layout");
-    const main = element("div", "pr-skeleton-main");
-    main.append(
-        skeletonCard(["loading-skeleton-short", "loading-skeleton-long", "loading-skeleton-medium"]),
-        skeletonCard(["loading-skeleton-medium", "loading-skeleton-long", "loading-skeleton-short"]),
-        skeletonCard(["loading-skeleton-short", "loading-skeleton-long"]),
-    );
-    const sidebar = element("div", "pr-skeleton-sidebar");
-    sidebar.append(
-        skeletonCard(["loading-skeleton-short", "loading-skeleton-medium", "loading-skeleton-medium"]),
-        skeletonCard(["loading-skeleton-short", "loading-skeleton-long"]),
-    );
-    layout.append(main, sidebar);
-    visual.append(header, layout);
-    shell.append(visual);
-    container.replaceChildren(shell);
 }
 
 function showWorkItemLoading(container, id) {
@@ -287,19 +223,6 @@ function showWorkItemLoading(container, id) {
     container.replaceChildren(shell);
 }
 
-function showPullRequestError(container, message, retry) {
-    const state = element("section", "pr-load-state pr-error-state");
-    state.setAttribute("role", "alert");
-    state.append(
-        element("h2", "pr-load-state-title", "Pull request could not load"),
-        element("p", "pr-load-state-message", message),
-    );
-    const button = element("button", "secondary retry-button", "Retry");
-    button.addEventListener("click", retry);
-    state.append(button);
-    container.replaceChildren(state);
-}
-
 // --- Tabs ------------------------------------------------------------------
 
 function activeTab() {
@@ -329,9 +252,8 @@ function tabEntry(tab) {
 // Ids are compared without coercing a missing or non-numeric id to 0, which is
 // the id the reference-opened tab uses: collapsing onto it would focus that tab
 // instead of opening the link that was clicked. The organization is part of the
-// identity because two organizations can each have an item 4711. Pull request
-// IDs are organization-wide, so project names and GUIDs must not split one PR
-// into duplicate tabs. Organization-scope work-item rows carry their project
+// identity because two organizations can each have an item 4711.
+// Organization-scope work-item rows carry their project
 // separately because their connection itself has no project.
 function sameEntry(left, right) {
     if (!left || !right || left.view !== right.view) {
@@ -347,9 +269,6 @@ function sameEntry(left, right) {
     if (!sameId || !sameOrganization) {
         return false;
     }
-    if (left.view === "pull-request") {
-        return true;
-    }
     const leftProject = left.view === "work-item" ? left.workItemProject || left.project : left.project;
     const rightProject = right.view === "work-item" ? right.workItemProject || right.project : right.project;
     return (leftProject || "").toLowerCase() === (rightProject || "").toLowerCase();
@@ -361,8 +280,6 @@ function connectionQuery(entry, extra = {}) {
     const params = new URLSearchParams();
     if (entry?.organization) params.set("organization", entry.organization);
     if (entry?.project) params.set("project", entry.project);
-    if (entry?.pullRequestProject) params.set("pullRequestProject", entry.pullRequestProject);
-    if (entry?.pullRequestRepositoryId) params.set("pullRequestRepositoryId", entry.pullRequestRepositoryId);
     for (const [key, value] of Object.entries(extra)) {
         if (value) params.set(key, value);
     }
@@ -385,26 +302,16 @@ function tabTitle(tab) {
     if (entry.view === "home") {
         return "Home";
     }
-    if (entry.view === "pull-request") {
-        return `PR !${tab.data?.id || entry.id}`;
-    }
     if (entry.view === "board") {
         return tab.data?.name || entry.name || "Board";
     }
     return tab.data ? `${tab.data.type} ${tab.data.id}` : `Work item ${entry.id}`;
 }
 
-// The pull request for the checked-out branch is the one the user is most likely
-// working in, so it stays identifiable once several are open.
-function isBranchPullRequestTab(tab) {
-    const entry = tabEntry(tab);
-    return Boolean(branchPullRequestId) && entry?.view === "pull-request" && Number(entry.id) === branchPullRequestId;
-}
-
 function renderTabBar({ revealActive = false } = {}) {
     renderNavigation(viewTabs, {
         tabs, activeTabId, collapsed: collapsedNavigationItems, sameEntry, tabTitle,
-        isBranchPullRequestTab, revealActive,
+        revealActive,
         onActivate: activateTab,
         onOpenChild: openWorkItem,
         onClose: closeTab,
@@ -432,7 +339,6 @@ function createTab(entry, { closable = true } = {}) {
         data: null,
         rendered: null,
         token: 0,
-        timelineFilter: "all",
         scrollTop: 0,
         editMode: false,
         dirty: false,
@@ -576,9 +482,7 @@ async function applyTab(tab) {
     }
     tab.token += 1;
     const token = tab.token;
-    if (entry.view === "pull-request") {
-        await loadPullRequestIntoTab(tab, entry.id, token);
-    } else if (entry.view === "board") {
+    if (entry.view === "board") {
         await loadBoardIntoTab(tab, token);
     } else {
         await loadWorkItemIntoTab(tab, entry, token);
@@ -730,11 +634,6 @@ async function loadConfig() {
         delegationFeatureFlag.checked = enabledFeatures.delegation;
     }
     versionLabel.textContent = currentConfig.extensionVersion ? `v${currentConfig.extensionVersion}` : "";
-    // A note rather than a warning: with a connection the canvas works fine
-    // without an Azure DevOps remote, and it stays silent when there is nothing
-    // to explain.
-    setNotice(remoteNotice(currentConfig));
-    addLog("trace", currentConfig.remote?.isAzureDevOps ? "Detected Azure DevOps remote." : "Azure DevOps remote not detected.", currentConfig.remote?.remoteUrl || "");
     return data;
 }
 
@@ -880,18 +779,11 @@ async function signOut() {
     }
 }
 
-// Azure DevOps rejects edits to a completed or abandoned pull request, so the
-// canvas does not offer them rather than surfacing a server error after the fact.
-function canEditPullRequest(pr) {
-    return String(pr?.status || "").toLowerCase() === "active";
-}
-
 function renderWorkItemTab(tab) {
     renderWorkItem(tab.content, tab.data, {
         avatarUrl: profileImageUrl,
         imageUrl: (url) => attachmentImageUrl(url, tabEntry(tab)),
         onOpenWorkItem: (item) => openWorkItem(item, tabEntry(tab)),
-        onOpenPullRequest: (relation) => openPullRequestRelation(relation, tabEntry(tab)),
         canEdit: true,
         editMode: tab.editMode,
         onDirtyChange: (dirty) => {
@@ -936,11 +828,6 @@ function renderBoardWorkItemDrawer() {
         canEdit: true,
         editMode: state.editMode,
         onOpenWorkItem: (item) => openBoardWorkItemDrawer(state.tab, item),
-        onOpenPullRequest: (relation) => {
-            if (closeBoardWorkItemDrawer()) {
-                void openPullRequestRelation(relation, tabEntry(state.tab));
-            }
-        },
         onDirtyChange: (dirty) => {
             if (boardWorkItemDrawerState !== state) return;
             state.dirty = dirty;
@@ -1408,7 +1295,7 @@ async function loadWorkItemIntoTab(tab, entry, token) {
 }
 
 // Every item opens in its own tab, including links followed from inside another
-// item, so any number of work items and pull requests can be open at once. A
+// item, so any number of work items can be open at once. A
 // link followed from inside an item stays on that item's connection.
 function openWorkItem(workItem, entry) {
     const item = typeof workItem === "object" && workItem
@@ -1438,233 +1325,6 @@ const ATTACHMENT_IMAGE_SOURCE =
 function attachmentImageUrl(imageUrl, entry) {
     if (!apiNonce || !ATTACHMENT_IMAGE_SOURCE.test(imageUrl)) return imageUrl;
     return `/api/attachment${connectionQuery(entry, { url: imageUrl, nonce: apiNonce })}`;
-}
-
-function renderPullRequestTab(tab) {
-    tab.replyDrafts ||= {};
-    renderPullRequest(tab.content, tab.data, {
-        avatarUrl: profileImageUrl,
-        imageUrl: (url) => attachmentImageUrl(url, tabEntry(tab)),
-        timelineFilter: tab.timelineFilter,
-        canEdit: canEditPullRequest(tab.data),
-        editMode: tab.editMode,
-        relatedWorkItems: tab.relatedWorkItems,
-        commentDraft: tab.commentDraft,
-        replyDrafts: tab.replyDrafts,
-        onCommentDraftChange: (draft) => {
-            tab.commentDraft = draft.content ? draft : null;
-        },
-        onReplyDraftChange: (threadId, draft) => {
-            if (draft.content) tab.replyDrafts[threadId] = draft;
-            else delete tab.replyDrafts[threadId];
-        },
-        // Azure DevOps rejects roster and link changes on a pull request that is
-        // no longer active, so those controls follow the same gate as editing.
-        canManageReviewers: canEditPullRequest(tab.data),
-        canManageWorkItems: canEditPullRequest(tab.data),
-        onDirtyChange: (dirty) => {
-            tab.dirty = dirty;
-        },
-        onEdit: () => setEditMode(tab, true, renderPullRequestTab),
-        onCancelEdit: () => setEditMode(tab, false, renderPullRequestTab),
-        onSubmit: () => tab.content.querySelector(".editor-save")?.click(),
-        onSave: (patch) => savePullRequest(tab, patch),
-        onVote: (vote) => pullRequestAction(tab, "vote", "POST", { vote }, `Recorded the ${vote} vote.`),
-        onAddComment: (content) => pullRequestAction(
-            tab,
-            "comments",
-            "POST",
-            { content },
-            "Added a pull request comment.",
-            {
-                timelineFilter: "comments",
-                beforeRender: () => { tab.commentDraft = null; },
-            },
-        ),
-        onReplyComment: (threadId, parentCommentId, content) => pullRequestAction(
-            tab,
-            `threads/${threadId}/comments`,
-            "POST",
-            { parentCommentId, content },
-            `Replied to discussion ${threadId}.`,
-            {
-                timelineFilter: "comments",
-                beforeRender: () => { delete tab.replyDrafts[threadId]; },
-            },
-        ),
-        onSetThreadStatus: (threadId, status) => pullRequestAction(
-            tab,
-            `threads/${threadId}`,
-            "PATCH",
-            { status },
-            `${status === "fixed" ? "Resolved" : "Reopened"} discussion ${threadId}.`,
-            { timelineFilter: status === "fixed" ? "resolved" : "active" },
-        ),
-        onFixComment: async (threadId, commentId) => {
-            await request(
-                `/api/pull-requests/${encodeURIComponent(tab.data.id)}/fix-comment${connectionQuery(tabEntry(tab))}`,
-                {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ threadId, commentId }),
-                },
-            );
-            addLog("trace", `Sent discussion ${threadId} to Copilot for fixing.`);
-        },
-        onStateAction: (action) => pullRequestStateAction(tab, action),
-        onSetReviewer: (reviewerId, isRequired) => pullRequestAction(
-            tab,
-            "reviewers",
-            "PUT",
-            { reviewerId, isRequired },
-            `Updated reviewer ${reviewerId}.`,
-        ),
-        onRemoveReviewer: (reviewerId) => pullRequestAction(
-            tab,
-            "reviewers/remove",
-            "POST",
-            { reviewerId },
-            `Removed reviewer ${reviewerId}.`,
-        ),
-        onLinkWorkItem: (workItemId) => pullRequestAction(
-            tab,
-            "work-items",
-            "POST",
-            { workItemId },
-            `Linked work item #${workItemId}.`,
-        ),
-        onUnlinkWorkItem: (workItemId) => pullRequestAction(
-            tab,
-            "work-items/remove",
-            "POST",
-            { workItemId },
-            `Unlinked work item #${workItemId}.`,
-        ),
-        onOpenWorkItem: (item) => openWorkItem(item, tabEntry(tab)),
-        onViewInAzureDevOps: (url) => window.open(url, "_blank", "noopener,noreferrer"),
-        onSearchIdentities: (query) => request(
-            `/api/identities${connectionQuery(tabEntry(tab), { query })}`,
-        ),
-        onSearchWorkItems: (query) => request(
-            `/api/work-item-search${connectionQuery(tabEntry(tab), { query })}`,
-        ),
-        onFilter: (filter) => {
-            tab.timelineFilter = filter;
-            renderPullRequestTab(tab);
-        },
-    });
-}
-
-// The state menu is three different routes wearing one label, because Azure
-// DevOps models draft, abandon, and complete as separate operations.
-function pullRequestStateAction(tab, action) {
-    if (action === "mark-draft" || action === "publish") {
-        return pullRequestAction(
-            tab,
-            "draft",
-            "POST",
-            { isDraft: action === "mark-draft" },
-            action === "mark-draft" ? "Marked the pull request as a draft." : "Published the pull request.",
-        );
-    }
-    if (action === "complete") {
-        return pullRequestAction(tab, "complete", "POST", {}, "Completed the pull request.");
-    }
-    return pullRequestAction(tab, "status", "POST", { action }, `Set the pull request to ${action}.`);
-}
-
-// Every pull request action returns the refreshed pull request, so the tab is
-// re-rendered from the server's answer rather than from an optimistic guess.
-async function pullRequestAction(tab, path, method, body, logMessage, options = {}) {
-    const data = await request(
-        `/api/pull-requests/${encodeURIComponent(tab.data.id)}/${path}${connectionQuery(tabEntry(tab))}`,
-        {
-            method,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        },
-    );
-    tab.data = data.pullRequest || tab.data;
-    if (data.relatedWorkItems) {
-        tab.relatedWorkItems = data.relatedWorkItems;
-    }
-    if (options.timelineFilter) {
-        tab.timelineFilter = options.timelineFilter;
-    }
-    options.beforeRender?.();
-    renderPullRequestTab(tab);
-    renderTabBar();
-    addLog("trace", logMessage, `PR !${tab.data.id}`);
-    return data;
-}
-
-async function savePullRequest(tab, patch) {
-    if (!Object.keys(patch).length) {
-        tab.editMode = false;
-        tab.dirty = false;
-        renderPullRequestTab(tab);
-        return;
-    }
-    const data = await request(`/api/pull-requests/${encodeURIComponent(tab.data.id)}${connectionQuery(tabEntry(tab))}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-    });
-    tab.data = data.pullRequest;
-    tab.editMode = false;
-    tab.dirty = false;
-    renderPullRequestTab(tab);
-    renderTabBar();
-    addLog("trace", "Saved pull request changes.", `PR !${tab.data.id}: ${Object.keys(patch).join(", ")}`);
-}
-
-// Resolves the pull request the canvas should lead with. Without a pull request
-// reference that is the checked-out branch's, which Home shows in its branch
-// section and the tab bar marks; with one it is the referenced pull request,
-// which says nothing about the branch, so no tab is marked in that case.
-async function loadLeadPullRequest({ isReference }) {
-    try {
-        const data = await request("/api/current-pull-request");
-        branchPullRequestInfo = {
-            sourceRefName: data.sourceRefName || data.pullRequest?.sourceRefName || "",
-            createPullRequestUrl: data.canCreatePullRequest ? data.createPullRequestUrl || "" : "",
-            pullRequest: data.pullRequest || null,
-            relatedWorkItems: data.relatedWorkItems || { workItems: [], count: 0, error: "" },
-            development: data.development || { pipelineRuns: [], count: 0, error: "" },
-            isDefaultBranch: Boolean(data.isDefaultBranch),
-            repository: data.repository || null,
-        };
-        branchPullRequestId = isReference ? 0 : Number(data.pullRequest?.id) || 0;
-        addLog(
-            "trace",
-            data.pullRequest ? "Loaded current pull request." : "No pull request for the current branch.",
-            data.pullRequest ? `PR !${data.pullRequest.id}: ${data.pullRequest.title}` : data.sourceRefName || "",
-        );
-    } catch (error) {
-        branchPullRequestId = 0;
-        // Distinct from "no pull request yet": the check itself did not complete.
-        branchPullRequestInfo = {
-            sourceRefName: "",
-            createPullRequestUrl: "",
-            pullRequest: null,
-            relatedWorkItems: { workItems: [], count: 0, error: "" },
-            development: { pipelineRuns: [], count: 0, error: "" },
-            isDefaultBranch: false,
-            repository: null,
-            error: error.message || "Unable to check for a pull request.",
-        };
-        addLog("error", "Failed to load current branch pull request.", error.message || "");
-    }
-}
-
-async function requestNewSessionBranch() {
-    const data = await request("/api/new-session-branch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-    });
-    addLog("trace", "Sent a branch creation request to chat.");
-    return data;
 }
 
 async function delegateHomeWorkItem(item, connection = null, force = false) {
@@ -1704,42 +1364,16 @@ async function loadHome() {
             homeContent,
             "Loading your Azure DevOps work",
             enabledFeatures.boards
-                ? "Fetching pull requests, favorite boards, and work items."
-                : "Fetching pull requests and work items.",
+                ? "Fetching favorite boards and work items."
+                : "Fetching work items.",
             { className: "home-loading-state" },
         );
     }
     try {
-        const branchMode = Boolean(
-            currentConfig.remote?.isAzureDevOps
-            && currentConfig.branch
-            && !currentConfig.pullRequestReference,
-        );
         const data = await request("/api/home");
         homeLoaded = true;
         renderHome(homeContent, data, {
-            // The branch section is about the checked-out repository, so it only
-            // belongs on Home when that repository has an Azure DevOps remote.
-            // A directly referenced pull request is not necessarily that branch.
-            hasRemoteConnection: Boolean(
-                currentConfig?.remote?.isAzureDevOps
-                && !currentConfig.pullRequestReference,
-            ),
-            branchPullRequest: branchPullRequestInfo?.pullRequest || null,
-            branchName: branchMode
-                ? branchPullRequestInfo?.sourceRefName || currentConfig.branch
-                : "",
-            branchScope: branchPullRequestInfo?.repository?.name || currentConfig.repositoryId || "",
-            relatedWorkItems: branchPullRequestInfo?.relatedWorkItems || { workItems: [], count: 0, error: "" },
-            development: branchPullRequestInfo?.development || { pipelineRuns: [], count: 0, error: "" },
-            isDefaultBranch: Boolean(branchPullRequestInfo?.isDefaultBranch),
-            createPullRequestUrl: branchPullRequestInfo?.createPullRequestUrl || "",
-            branchError: branchPullRequestInfo?.error || "",
-            showNewBranchAction: !currentConfig.branch,
-            onRetryBranch: refresh,
-            onCreateBranch: requestNewSessionBranch,
             onOpenBoard: enabledFeatures.boards ? openHomeBoard : null,
-            onOpenPullRequest: openPullRequest,
             onDelegateWorkItem: enabledFeatures.delegation ? delegateHomeWorkItem : null,
             onOpenWorkItem: openHomeWorkItem,
             onChooseProject: openConnectionPanel,
@@ -1749,10 +1383,7 @@ async function loadHome() {
             "Loaded Azure DevOps home overview.",
             [
                 ...(data.connections || []).map((connection) =>
-                    `${[connection.organization, connection.project].filter(Boolean).join("/")}: ${connection.myPullRequests?.pullRequests?.length || 0} pull requests, ${connection.myBoards?.boards?.length || 0} boards, ${connection.myWorkItems?.workItems?.length || 0} work items`),
-                branchMode
-                    ? `${branchPullRequestInfo?.relatedWorkItems?.workItems?.length || 0} related work items`
-                    : "",
+                    `${[connection.organization, connection.project].filter(Boolean).join("/")}: ${connection.myBoards?.boards?.length || 0} boards, ${connection.myWorkItems?.workItems?.length || 0} work items`),
             ].filter(Boolean).join(", "),
         );
     } catch (error) {
@@ -1762,57 +1393,9 @@ async function loadHome() {
     }
 }
 
-async function loadPullRequestIntoTab(tab, id, token) {
-    showPullRequestLoading(tab.content, id);
-    tab.rendered = null;
-    const entry = tabEntry(tab);
-    try {
-        const data = await request(`/api/pull-requests/${encodeURIComponent(id)}${connectionQuery(entry)}`);
-        if (token !== tab.token) {
-            return;
-        }
-        tab.data = data.pullRequest;
-        tab.relatedWorkItems = data.relatedWorkItems || { workItems: [], count: 0, error: "" };
-        tab.rendered = { ...entry, view: "pull-request", id: Number(data.pullRequest?.id) || 0 };
-        tab.timelineFilter = "all";
-        tab.editMode = false;
-        tab.dirty = false;
-        renderPullRequestTab(tab);
-        addLog("trace", "Loaded pull request details.", `PR !${tab.data.id}: ${tab.data.title}`);
-    } catch (error) {
-        if (token !== tab.token) {
-            return;
-        }
-        tab.data = null;
-        tab.rendered = null;
-        addLog("error", "Failed to load pull request details.", error.message || "");
-        showPullRequestError(
-            tab.content,
-            error.message || "Unable to load the pull request.",
-            () => loadPullRequestIntoTab(tab, id, tab.token),
-        );
-    }
-}
-
 // Home is an index, so its rows open their own tabs rather than replacing Home.
 // The row's connection travels with it: Home can list two organizations, and a
 // row has to be fetched from the one it came from.
-function openPullRequest(id, connection) {
-    return openEntry(entryForConnection("pull-request", id, connection || defaultEntryConnection()));
-}
-
-function openPullRequestRelation(relation, connection) {
-    return openEntry(entryForConnection(
-        "pull-request",
-        Number(relation.identifier),
-        connection || defaultEntryConnection(),
-        {
-            pullRequestProject: relation.projectId || "",
-            pullRequestRepositoryId: relation.repositoryId || "",
-        },
-    ));
-}
-
 // An organization-scope work item list spans projects, so the row carries the
 // project the item actually lives in; the connection alone does not know it.
 function openHomeWorkItem(workItem, connection) {
@@ -1831,9 +1414,7 @@ function openHomeBoard(board, connection) {
     });
 }
 
-// A tab opened from somewhere other than a Home row - a link inside a pull
-// request, or the canvas's own pull request reference - belongs to the canvas's
-// primary connection.
+// Entries opened from a reference use the primary connection.
 function defaultEntryConnection() {
     return currentConfig?.connections?.[0] || null;
 }
@@ -1912,22 +1493,19 @@ async function loadConnectionOrganizations() {
     renderConnections();
 }
 
-// Projects and repositories are both optional, so a failure to list them is not
-// reported: the user can still type one, or leave it empty.
+// Project is optional; a failed lookup still allows typing a project name.
 async function loadConnectionOptions() {
     const organization = connectionState.draft.organization;
     if (!organization) {
         connectionState.projects = [];
-        connectionState.repositories = [];
         renderConnections();
         return;
     }
     connectionState.loading = "options";
     renderConnections();
     const query = new URLSearchParams({ organization });
-    const [projectResult, repositoryResult] = await Promise.allSettled([
+    const [projectResult] = await Promise.allSettled([
         request(`/api/projects?${query}`),
-        request(`/api/repositories?${query}`),
     ]);
     // A slower request must not overwrite options for an organization the user
     // has since changed to, or for a picker they have since closed.
@@ -1936,9 +1514,6 @@ async function loadConnectionOptions() {
     }
     connectionState.projects = projectResult.status === "fulfilled"
         ? (projectResult.value.projects || []).map((project) => project.name)
-        : [];
-    connectionState.repositories = repositoryResult.status === "fulfilled"
-        ? (repositoryResult.value.repositories || []).map((repository) => repository.name)
         : [];
     connectionState.loading = "";
     renderConnections();
@@ -1950,13 +1525,11 @@ function openConnectionPanel(connection) {
         draft: {
             organization: current?.organization || "",
             project: current?.project || "",
-            repositoryId: current?.repositoryId || "",
             isDefault: Boolean(current?.isDefault),
         },
         organizations: [],
         organizationsError: "",
         projects: [],
-        repositories: [],
         loadedOptionsFor: "",
         loading: "",
         error: "",
@@ -1982,9 +1555,9 @@ function openConnectionPanel(connection) {
                 return;
             }
             connectionState.loadedOptionsFor = organization;
-            // A project or repository from the previous organization is not a
+            // A project from the previous organization is not a
             // valid choice in this one.
-            connectionState.draft = { ...connectionState.draft, organization, project: "", repositoryId: "" };
+            connectionState.draft = { ...connectionState.draft, organization, project: "" };
             renderConnections();
             loadConnectionOptions();
         },
@@ -2091,15 +1664,9 @@ async function refresh() {
         // browser's reload-this-tab, and the footer control is the way back to a
         // known-good canvas when something is stale or wrong.
         resetTabs();
-        branchPullRequestInfo = null;
-        branchPullRequestId = 0;
 
         const isWorkItem = Boolean(currentConfig.workItemReference);
-        const validReference = currentConfig.pullRequestReference || isWorkItem;
-        // No Azure DevOps remote is no longer a dead end. Without a reference and
-        // without a saved organization there is simply nothing to read from yet,
-        // so the canvas asks for one instead of reporting a missing remote.
-        if (!(currentConfig.connections || []).length && !validReference) {
+        if (!(currentConfig.connections || []).length && !isWorkItem) {
             viewBar.hidden = true;
             resetTabs();
             openConnectionPanel();
@@ -2108,46 +1675,27 @@ async function refresh() {
         closeConnectionPanel();
         viewBar.hidden = false;
 
-        const isPullRequestReference = Boolean(currentConfig.pullRequestReference);
-        // Put a real visible surface in place before resolving branch context. That
-        // request is part of Home, and previously left the authenticated canvas
-        // empty until it completed.
         const home = createTab({ view: "home" }, { closable: false });
         activeTabId = home.id;
         showLoading(
             homeContent,
             "Loading your Azure DevOps work",
             enabledFeatures.boards
-                ? "Fetching pull requests, favorite boards, and work items."
-                : "Fetching pull requests and work items.",
+                ? "Fetching favorite boards and work items."
+                : "Fetching work items.",
             { className: "home-loading-state" },
         );
         renderTabBar();
         showActivePanel();
 
-        // Resolve branch context before building Home, including when the canvas
-        // opens directly on a work item.
-        if (isPullRequestReference || (currentConfig.remote?.isAzureDevOps && currentConfig.branch)) {
-            await loadLeadPullRequest({ isReference: isPullRequestReference });
-        } else {
-            branchPullRequestInfo = null;
-            branchPullRequestId = 0;
-        }
-
         if (isWorkItem) {
-            // Keep Home behind a directly opened work item, matching the pull
-            // request flow and giving linked items a stable place to return to.
+            // Keep Home behind a directly opened work item so linked items
+            // have a stable place to return to.
             // The id lives in the canvas input, so the server resolves it.
             await openEntry({ ...entryForConnection("work-item", 0, defaultEntryConnection()), current: true });
             return;
         }
 
-        const leadPullRequest = branchPullRequestInfo?.pullRequest;
-        if (isPullRequestReference && leadPullRequest) {
-            // Opened on a pull request: show it, with Home still available behind it.
-            await openEntry(entryForConnection("pull-request", leadPullRequest.id, defaultEntryConnection()));
-            return;
-        }
         await loadHome();
     } catch (error) {
         addLog("error", "Canvas refresh failed.", error.message || "");
@@ -2180,16 +1728,13 @@ async function refreshActiveTab() {
         const entry = tabEntry(tab);
         if (entry.view === "home") {
             homeLoaded = false;
-            if (currentConfig.remote?.isAzureDevOps && currentConfig.branch && !currentConfig.pullRequestReference) {
-                await loadLeadPullRequest({ isReference: false });
-            }
             await loadHome();
             return;
         }
         tab.token += 1;
         const token = tab.token;
-        if (entry.view === "pull-request") {
-            await loadPullRequestIntoTab(tab, entry.id, token);
+        if (entry.view === "board") {
+            await loadBoardIntoTab(tab, token);
         } else {
             await loadWorkItemIntoTab(tab, entry, token);
         }

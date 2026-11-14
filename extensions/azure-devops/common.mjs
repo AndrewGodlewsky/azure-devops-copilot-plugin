@@ -2,7 +2,6 @@
 // Preview-only surfaces remain disabled unless the user enables them from the
 // canvas logs panel. The distribution transform removes that panel's controls.
 export const AGENCY_AUTH_ENABLED = false;
-export const PULL_REQUEST_REVIEW_VOTING_ENABLED = false;
 export const DEFAULT_FEATURE_FLAGS = Object.freeze({
     boards: false,
     delegation: false,

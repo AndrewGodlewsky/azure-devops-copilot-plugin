@@ -22,10 +22,9 @@ function render(overrides = {}) {
     const draftChanges = [];
     const committedOrganizations = [];
     const view = renderConnectionPanel(host, {
-        draft: { organization: "Alpha", project: "", repositoryId: "", isDefault: false },
+        draft: { organization: "Alpha", project: "", isDefault: false },
         organizations: ["Alpha", "Beta", "Gamma"],
         projects: ["Project one", "Project two"],
-        repositories: ["Repo one", "Repo two"],
         ...overrides,
     }, {
         onDraftChange: (change) => draftChanges.push(change),
@@ -82,4 +81,11 @@ test("the combobox supports keyboard selection", needsDom, () => {
 
     assert.equal(input.value, "Beta");
     assert.deepEqual(committedOrganizations, ["Beta"]);
+});
+
+test("connections need only an organization and optional project", needsDom, () => {
+    const { host, view } = render({ firstRun: true });
+    assert.deepEqual([...host.querySelectorAll(".connection-field-label")].map(node => node.textContent), ["Organization", "Project"]);
+    assert.doesNotMatch(host.textContent, /repository|repositories|pull request|git remote/i);
+    assert.deepEqual(view.read(), { organization: "Alpha", project: "", isDefault: false });
 });

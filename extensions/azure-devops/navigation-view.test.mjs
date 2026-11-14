@@ -28,8 +28,7 @@ function setup(t, tabs, extra = {}) {
     }
     const calls = [];
     const options = { tabs, activeTabId: tabs[0]?.id, collapsed: new Set(), sameEntry,
-        tabTitle: (item) => item.entry.view === "home" ? "Home" : `${item.data.type || "PR"} ${item.entry.id}`,
-        isBranchPullRequestTab: () => false,
+        tabTitle: (item) => item.entry.view === "home" ? "Home" : `${item.data.type || "Work item"} ${item.entry.id}`,
         onActivate: (id) => calls.push(["activate", id]),
         onOpenChild: (item, entry) => calls.push(["child", item, entry]),
         onClose: (id) => calls.push(["close", id]), ...extra };
@@ -38,9 +37,9 @@ function setup(t, tabs, extra = {}) {
     return { container, options, calls, render, window: dom.window };
 }
 
-test("sidebar shows nested child summaries without fetching their details and separates pull requests", describeDom, (t) => {
+test("sidebar shows nested child summaries without fetching their details", describeDom, (t) => {
     const parent = story(10, [child(11, "Other Project"), child(12)]);
-    const { container, calls } = setup(t, [tab("home", "home", 0), tab("pr", "pull-request", 28, { title: "Widget changes" }), parent]);
+    const { container, calls } = setup(t, [tab("home", "home", 0), parent]);
     const group = container.querySelector('[data-tab-id="tab-10"]').closest("li").querySelector("ul");
     assert.equal(group.querySelectorAll(".view-tab").length, 2);
     assert.match(group.textContent, /Build widget 11/);
@@ -49,7 +48,7 @@ test("sidebar shows nested child summaries without fetching their details and se
     assert.equal(calls[0][0], "child");
     assert.equal(calls[0][1].project, "Other Project");
     assert.equal(calls[0][2].organization, "contoso");
-    assert.deepEqual([...container.querySelectorAll(".navigation-heading")].map(n => n.textContent), ["Open work", "Pull requests"]);
+    assert.deepEqual([...container.querySelectorAll(".navigation-heading")].map(n => n.textContent), ["Open work"]);
 });
 
 test("opened children appear once beneath their parent and closing only targets their view", describeDom, (t) => {
