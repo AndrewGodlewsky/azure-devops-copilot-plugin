@@ -1,6 +1,9 @@
-.workspace-nav-button { display: block; width: 100%; padding: 10px 12px 10px 28px; border: 0; text-align: left; background: transparent; color: inherit; font-weight: 500; }
-.workspace-nav-button[aria-current="page"] { background: var(--background-color-accent-muted, rgba(9,105,218,.12)); color: var(--text-color-accent, #0969da); }
-.workspace-create-button { width: 100%; margin-top: 10px; }
+.workspace-nav-button { display: flex; width: 100%; padding: 8px 12px 8px 28px; border: 0; text-align: left; background: transparent; color: inherit; font-weight: 500; align-items: center; gap: 8px; min-height: 36px; margin: 2px 0; border-radius: 8px; line-height: 20px; }
+.workspace-nav-button[aria-current="page"] { background: var(--background-color-neutral-muted, rgba(127,127,127,.12)); color: var(--text-color-default, #1f2328); }
+.workspace-nav-button { position: relative; }
+.workspace-nav-button[aria-current="page"]::before { content: ""; position: absolute; inset: 8px auto 8px 0; width: 2px; border-radius: 2px; background: var(--background-color-accent-emphasis, #0969da); }
+.workspace-nav-button:hover, .workspace-create-button:hover { background: var(--background-color-neutral-muted, rgba(127,127,127,.12)); }
+.workspace-create-button { width: 100%; margin-top: 16px; color: var(--text-color-default, #1f2328); background: transparent; border: 1px solid var(--canvas-line); font-weight: 500; }
 .draft-notice { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color-muted, #d8dee4); border-radius: 8px; background: var(--background-color-muted, #f6f8fa); font-size: 12px; }
 .draft-notice:empty { display: none; }
 .draft-actions { display: flex; gap: 8px; flex-wrap: wrap; }

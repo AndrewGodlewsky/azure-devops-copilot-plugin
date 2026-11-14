@@ -355,7 +355,9 @@ export function createWorkspaceView(container, { request, connections = [], onOp
         const reset = button("Clear", () => { filters = { query: "", assignee: "mine", state: "", type: "", tags: "" }; cursors = [""]; page = 0; content.replaceChildren(); void refresh(); });
         const personField = field("Person", person);
         personField.classList.add("workspace-person-filter");
-        form.append(field("Search", search), field("Assignee", assignee), personField, field("Type", type), field("State", state), field("Tags", tags), apply, reset);
+        const filterActions = element("div", "workspace-filter-actions");
+        filterActions.append(apply, reset);
+        form.append(field("Search", search), field("Assignee", assignee), personField, field("Type", type), field("State", state), field("Tags", tags), filterActions);
         form.addEventListener("submit", event => {
             event.preventDefault();
             if (assignee.value === "identity" && !person.value.trim()) { person.focus(); person.setCustomValidity("Enter a person's email or identity."); person.reportValidity(); return; }
@@ -476,6 +478,7 @@ export function createWorkspaceView(container, { request, connections = [], onOp
     function renderBoard() {
         const previous = content.querySelector(".workspace-board");
         const scrollLeft = previous?.scrollLeft || 0;
+        const openMoves = new Set([...content.querySelectorAll(".workspace-card-actions[open]")].map(node => node.closest("[data-item-id]").dataset.itemId));
         const focus = content.contains(doc.activeElement) ? doc.activeElement.dataset.focusKey : null;
         const boardView = element("div", "workspace-board");
         boardView.setAttribute("aria-label", board?.name || "Team board");
@@ -510,7 +513,8 @@ export function createWorkspaceView(container, { request, connections = [], onOp
             for (const item of unplaced) section.append(boardCard(item, boardLanes));
             boardView.append(section);
         }
-        content.replaceChildren(element("p", "workspace-board-help", "Drag a card to move it, or use its Move to menu with the keyboard."), boardView);
+        for (const node of boardView.querySelectorAll(".workspace-card-actions")) node.open = openMoves.has(node.closest("[data-item-id]").dataset.itemId);
+        content.replaceChildren(element("p", "workspace-board-help", "Drag a card between columns, or choose Move"), boardView);
         if (board.scopeNote) content.append(element("p", "workspace-sample-note", board.scopeNote));
         if (board.truncated) content.append(element("p", "workspace-sample-note", `This board is a sample${board.sampleLimit ? ` of up to ${board.sampleLimit} items` : ""}. Open Work items to search all work.`));
         if (!boardLanes.length) content.append(element("p", "workspace-empty", "This board has no configured columns."));
@@ -547,7 +551,12 @@ export function createWorkspaceView(container, { request, connections = [], onOp
         const moveButton = button("Move"); moveButton.type = "submit"; moveButton.disabled = move.disabled; moveButton.dataset.focusKey = `${item.id}:move`;
         moveForm.append(field("Move to", move), moveButton);
         moveForm.addEventListener("submit", event => { event.preventDefault(); const lane = boardLanes.find(lane => laneValue(lane) === move.value); if (lane) void mutateCard(item, { lane }); });
-        card.append(moveForm);
+        const actions = element("details", "workspace-card-actions");
+        const summary = element("summary", "", "Move");
+        summary.dataset.focusKey = `${item.id}:move-toggle`;
+        summary.setAttribute("aria-label", `Move work item ${item.id}`);
+        actions.append(summary, moveForm);
+        card.append(actions);
         if (!canMutate) card.append(element("p", "workspace-section-error", "Refresh the board before changing this item."));
         return card;
     }

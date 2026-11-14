@@ -239,6 +239,10 @@ test("native board renders actual split columns and keyboard moves use revision 
     await ui.controller.show("board");
     assert.deepEqual([...ui.container.querySelectorAll(".workspace-column-heading h2")].map(node => node.textContent), ["Ready", "Working / In progress", "Working / Done", "Complete"]);
     const move = ui.control("Move 11 to");
+    const disclosure = move.closest("details");
+    assert.ok(disclosure, "Movement is available through a native keyboard disclosure");
+    assert.equal(disclosure.open, false, "Keep board cards compact until movement is requested");
+    disclosure.open = true;
     ui.change(move, JSON.stringify(["working", true]));
     ui.submit(move.closest("form")); await settle();
     const call = ui.calls.find(call => call.path === "/api/workspace/board/move");
@@ -247,6 +251,7 @@ test("native board renders actual split columns and keyboard moves use revision 
     assert.equal(call.params.get("boardId"), "stories");
     assert.equal(ui.container.querySelector('[data-item-id="11"]').closest(".workspace-board-column").dataset.done, "true");
     assert.equal(ui.control("Move 11 to").disabled, true);
+    assert.equal(ui.control("Move 11 to").closest("details").open, true);
     held.resolve({ workItem: item(11, { columnId: "working", columnDone: true, rev: 5 }) }); await settle();
     assert.equal(ui.changes.length, 1);
     assert.match(ui.container.textContent, /moved to Working \/ Done/);
@@ -256,6 +261,9 @@ test("failed board movement rolls back with a useful error and keyboard focus", 
     const ui = setup(t, { handle(call) { if (call.path === "/api/workspace/board/move") throw new Error("Revision conflict. Refresh and try again."); } });
     await ui.controller.show("board");
     const move = ui.control("Move 11 to");
+    const disclosure = move.closest("details");
+    assert.ok(disclosure);
+    disclosure.open = true;
     ui.change(move, JSON.stringify(["closed", false]));
     const submitButton = move.closest("form").querySelector("button");
     submitButton.focus();
@@ -264,6 +272,7 @@ test("failed board movement rolls back with a useful error and keyboard focus", 
     assert.match(ui.container.querySelector('[role="alert"]').textContent, /Revision conflict/);
     assert.equal(ui.changes.length, 0);
     assert.equal(ui.document.activeElement.dataset.focusKey, "11:move");
+    assert.equal(ui.document.activeElement.closest("details").open, true);
 });
 
 test("board cards omit assignment controls and owner text while retaining navigation and drag-and-drop", needsDom, async t => {

@@ -139,6 +139,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 let browser, page;
+async function lightScreenshot(name) {
+    const style = await page.addStyleTag({ content: ':root{color-scheme:light;--background-color-default:#ffffff;--background-color-muted:#f6f8fa;--text-color-default:#1f2328;--text-color-muted:#57606a;--text-color-link:#0969da;--text-color-accent:#0969da;--border-color-default:#d0d7de;--border-color-muted:#d8dee4;--background-color-neutral-muted:#eaeef2;--background-color-accent-muted:#ddf4ff;--background-color-accent-emphasis:#0969da}' });
+    try { await page.screenshot({ path: path.join(output, name), fullPage: true }); }
+    finally { await style.evaluate(node => node.remove()); }
+}
 try {
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
     browser = await chromium.launch({ executablePath: process.env.BRAVE_PATH || "C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe", headless: true });
@@ -149,11 +154,14 @@ try {
     await page.getByRole("heading", { name: "My current work", exact: false }).waitFor();
     assert.doesNotMatch(await page.locator(".workspace-dashboard").innerText(), /another person's|unassigned task/);
     await page.screenshot({ path: path.join(output, "home-desktop.png"), fullPage: true });
+    assert.equal(await page.locator('[data-workspace-view="items"]').evaluate(node => node.getBoundingClientRect().height), 36);
+    await lightScreenshot("home-light.png");
     await page.locator('[data-workspace-view="items"]').click();
     await page.locator(".workspace-table tbody tr").first().waitFor();
     assert.equal(await page.getByRole("combobox", { name: "Assignee", exact: true }).inputValue(), "mine");
     assert.equal(await page.locator(".workspace-table tbody tr").count(), 3);
     assert.doesNotMatch(await page.locator(".workspace-table").innerText(), /Jamie Rivera|Unassigned/);
+    await page.screenshot({ path: path.join(output, "work-items-desktop.png"), fullPage: true });
     await page.getByRole("combobox", { name: "Assignee", exact: true }).selectOption("all");
     await page.getByRole("searchbox", { name: "Search work items" }).fill("160");
     await page.getByRole("button", { name: "Apply filters", exact: true }).click();
@@ -227,6 +235,10 @@ try {
     assert.equal(await page.locator('.workspace-board [data-item-id="160"], .workspace-board [data-item-id="161"]').count(), 0);
     assert.equal(await page.locator(".workspace-card-assignment, .workspace-assignee").count(), 0);
     let card = page.locator('[data-item-id="143"]');
+    assert.equal(await card.locator("details").getAttribute("open"), null);
+    await card.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await card.getByRole("combobox", { name: "Move 143 to" }).isVisible(), true);
     await card.getByRole("combobox", { name: "Move 143 to" }).selectOption({ label: "Active" });
     await card.getByRole("button", { name: "Move", exact: true }).focus();
     await page.keyboard.press("Enter");
@@ -264,6 +276,7 @@ try {
     await page.locator(".workspace-board-card").first().waitFor();
     assert.equal(await page.locator('[data-item-id="143"]').count(), 0, "Reassigned items leave the personal board");
     await page.screenshot({ path: path.join(output, "board-desktop.png"), fullPage: true });
+    await lightScreenshot("board-light.png");
     for (const width of [900, 390]) {
         await page.setViewportSize({ width, height: 900 });
         await page.screenshot({ path: path.join(output, `board-${width}.png`), fullPage: true });

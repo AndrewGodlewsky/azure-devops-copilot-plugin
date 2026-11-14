@@ -10,7 +10,7 @@ This is [Andrew Godlewsky's Azure DevOps Copilot Plugin](https://github.com/Andr
 - Customize **Home** with your current work, blocked items, parents with unfinished tasks, and recently completed work.
 - Start **Work items** with work assigned to you, search by title or ID, and filter by state, type and tags. Choose **Anyone**, **Unassigned**, or **Specific person** when you want a wider search.
 - Create stories, issues, bugs and tasks using the project's actual work item types. **Add task** links a child and inherits its parent's assignment, area and iteration.
-- Use **Board** to see your assigned work in a selected project, team and board, and move cards by dragging or keyboard controls. Open an item and choose **Edit** to change its assignment.
+- Use **Board** to see your assigned work in a selected project, team and board. Drag cards between columns, or expand **Move** on a card to use the keyboard controls. Open an item and choose **Edit** to change its assignment.
 - Edit work items, post comments, attach files, and paste screenshots into descriptions or discussions.
 - Recover local drafts and open views after reopening the canvas. Background refresh preserves edits and offers a comparison when Azure DevOps values have changed.
 - Navigate open stories and their child tasks in an expandable vertical sidebar.

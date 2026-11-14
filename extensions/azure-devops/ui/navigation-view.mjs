@@ -30,7 +30,7 @@ export function renderNavigation(container, options) {
         svg.setAttribute("aria-hidden", "true");
         svg.setAttribute("fill", "none");
         svg.setAttribute("stroke", "currentColor");
-        svg.setAttribute("stroke-width", "1.3");
+        svg.setAttribute("stroke-width", "1.5");
         if (name === "close") {
             svg.setAttribute("data-icon-source", "octicon");
             svg.setAttribute("data-icon-name", "x");
@@ -129,8 +129,6 @@ export function renderNavigation(container, options) {
         const iconName = entry.view === "work-item" ? (type === "task" ? "task" : type === "bug" ? "bug" : "story") : entry.view;
         const leading = element("span", `navigation-icon navigation-icon-${iconName}`);
         leading.append(icon(iconName));
-        const color = tab?.data?.typeColor;
-        if (/^#?[0-9a-f]{6}$/i.test(color || "")) leading.style.color = `#${color.replace(/^#/, "")}`;
         const copy = element("span", "navigation-copy");
         copy.append(element("span", "navigation-title", title));
         if (entry.view !== "home") copy.append(element("span", "navigation-meta", [shortTitle, state].filter(Boolean).join(" · ")));
@@ -169,7 +167,10 @@ export function renderNavigation(container, options) {
         group.append(list);
         if (!name && options.workspace) {
             for (const [view, label] of [["items", "Work items"], ["board", "Board"]]) {
-                const button = element("button", "workspace-nav-button", label);
+                const button = element("button", "workspace-nav-button");
+                const leading = element("span", "navigation-icon");
+                leading.append(icon(view === "items" ? "task" : "board"));
+                button.append(leading, element("span", "", label));
                 button.type = "button";
                 button.dataset.workspaceView = view;
                 if (options.workspace.view === view) button.setAttribute("aria-current", "page");

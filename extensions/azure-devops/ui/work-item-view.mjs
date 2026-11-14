@@ -640,7 +640,7 @@ export function renderWorkItem(container, item, options = {}) {
     const headerActions = element("div", "work-item-header-actions");
     const chatStatus = element("div", "work-item-chat-status");
     const sendChat = options.onSendToChat
-        ? element("button", "primer-button secondary work-item-send-chat", "Send to chat") : null;
+        ? element("button", `primer-button ${options.editMode ? "secondary" : "primary"} work-item-send-chat`, "Send to chat") : null;
     const setChatStatus = ({ pending = false, message = "", error = "" } = {}) => {
         if (!sendChat) return;
         sendChat.disabled = pending;
@@ -688,7 +688,6 @@ export function renderWorkItem(container, item, options = {}) {
                     onSelect: () => options.onDelegateLocal?.(),
                 }],
             });
-            delegate.trigger.classList.add("primary");
             delegate.trigger.disabled = Boolean(options.delegationPending);
             headerActions.append(delegate.control);
         }

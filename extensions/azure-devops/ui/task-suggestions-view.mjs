@@ -102,7 +102,7 @@ export function createTaskSuggestionPanel({ request, url, onCreated, confirm = m
             if (!busy) host.append(button("Try again", open));
             return;
         }
-        host.append(element("p", "task-suggestions-hint", `For #${draft.parentId} · saved revision ${draft.parentRev}. Draft suggestions stay in this canvas session. Nothing is created until you choose Create selected tasks.`));
+        host.append(element("p", "task-suggestions-hint", `#${draft.parentId} · Saved revision ${draft.parentRev} · Drafts last for this canvas session. Review and select tasks before creating them.`));
         if (draft.status === "waiting") host.append(element("p", "", "Waiting for Copilot. Follow the current chat for progress or clarification; results will appear here."));
         if (draft.questions.length) {
             host.append(element("h3", "", "Questions to discuss in chat"));
@@ -120,7 +120,7 @@ export function createTaskSuggestionPanel({ request, url, onCreated, confirm = m
                 check.addEventListener("change", () => { task.selected = check.checked; dirty = true; });
                 label.append(check, document.createTextNode("Create this task")); row.append(label);
                 for (const [field, labelText, max] of [["title", "Title", 255], ["description", "Description", 8000], ["doneWhen", "Done when", 2000]]) {
-                    const label = element("label", "", labelText);
+                    const label = element("label", `task-suggestion-${field}`, labelText);
                     const input = element(field === "title" ? "input" : "textarea", "editor-body");
                     input.value = task[field]; input.maxLength = max;
                     input.setAttribute("aria-label", `${labelText} for task ${index + 1}`);

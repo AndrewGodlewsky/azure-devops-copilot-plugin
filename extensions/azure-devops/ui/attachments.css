@@ -1,4 +1,4 @@
-.attachment-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border: 1px dashed var(--border-color-default, #d0d7de); border-radius: 6px; background: var(--background-color-default, #fff); }
+.attachment-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border: 1px dashed var(--canvas-line); border-radius: 8px; background: var(--background-color-default, #fff); }
 .attachment-upload.is-dragging { border-color: var(--text-color-link, #0969da); background: var(--background-color-neutral-muted, #f6f8fa); }
 .attachment-hint { color: var(--text-color-muted, #57606a); font-size: 12px; }
 .attachment-status { flex-basis: 100%; display: grid; gap: 6px; overflow-wrap: anywhere; font-size: 12px; }
