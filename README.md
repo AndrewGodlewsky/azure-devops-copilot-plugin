@@ -9,6 +9,7 @@ This is Andrew Godlewsky's fork of the [Microsoft Azure DevOps Copilot Plugin](h
 
 - See **My Work** across Azure DevOps.
 - Browse and update work items.
+- Navigate open stories and their child tasks in an expandable vertical sidebar, with pull requests grouped separately.
 - See linked child tasks in a work item's **Tasks and child work items** section, and click a task to open its details.
 - Review and manage pull requests.
 - Connect pull requests and work items.
@@ -31,3 +32,5 @@ This fork uses distinct plugin and marketplace names so it can be registered alo
 ## Usage
 
 Open the **Azure DevOps** canvas in the GitHub Copilot App to view My Work, work items, and pull requests for your Azure DevOps projects.
+
+The sidebar keeps each opened item's details and edits available as you switch. Expand a story to choose its tasks, or use the close button to close an item's view. Closing a story keeps any independently opened tasks available. Use the navigation toggle to make more room for details; narrow canvases start with navigation collapsed.

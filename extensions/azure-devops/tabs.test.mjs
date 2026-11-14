@@ -340,6 +340,7 @@ function makeFetch(state) {
                     discussion: [],
                     templateSections: state.workItemSections || [],
                     relations: state.relations || [],
+                    ...state.workItemsById?.[id],
                 },
             });
             const gate = state.holdWorkItems?.[id];
@@ -378,11 +379,17 @@ async function boot(state = {}) {
 }
 
 const bar = (w) => w.document.getElementById("viewTabs");
-const allTabEls = (w) => [...bar(w).querySelectorAll(".view-tab")];
-const tabEls = (w) => [...bar(w).querySelectorAll(".view-tab")];
-const titles = (w) => tabEls(w).map((el) => el.querySelector(".view-tab-label").textContent);
-const allTitles = (w) => allTabEls(w).map((el) => el.querySelector(".view-tab-label").textContent);
-const activeTitle = (w) => bar(w).querySelector(".view-tab.active .view-tab-label")?.textContent;
+// Lifecycle assertions keep creation order; sidebar hierarchy/order has separate coverage.
+const allTabEls = (w) => [...bar(w).querySelectorAll(".view-tab[data-tab-id]")]
+    .sort((a, b) => Number(a.dataset.tabId.split("-")[1]) - Number(b.dataset.tabId.split("-")[1]));
+const tabEls = allTabEls;
+const shortTitle = (el) => el.querySelector(".view-tab-label").getAttribute("aria-label").split(":")[0].replace(/, current branch$/, "");
+const titles = (w) => tabEls(w).map(shortTitle);
+const allTitles = titles;
+const activeTitle = (w) => {
+    const row = bar(w).querySelector(".view-tab.active");
+    return row ? shortTitle(row) : undefined;
+};
 const visiblePanels = (w) => [...w.document.querySelectorAll("#homePanel, #tabPanels > .tab-panel")].filter((p) => !p.hidden);
 const marks = (w) => tabEls(w).map((el) => Boolean(el.querySelector(".view-tab-branch")));
 
@@ -754,8 +761,8 @@ test("board cards open the shared work item UI in a drawer with one Delegate men
     assert.equal(drawer.hidden, false);
     assert.ok(drawer.classList.contains("open"));
     assert.equal(window.document.activeElement, window.document.getElementById("workItemDrawerClose"));
-    assert.equal(window.document.getElementById("homePanel").getAttribute("aria-hidden"), "true");
-    assert.equal(window.document.getElementById("homePanel").hasAttribute("inert"), true);
+    assert.equal(window.document.getElementById("homePanel").closest(".canvas-layout").getAttribute("aria-hidden"), "true");
+    assert.equal(window.document.getElementById("homePanel").closest(".canvas-layout").hasAttribute("inert"), true);
     assert.equal(backgroundControl.getAttribute("aria-hidden"), null);
     assert.equal(backgroundControl.closest("footer").getAttribute("aria-hidden"), "true");
     assert.equal(backgroundControl.closest("footer").hasAttribute("inert"), true);
@@ -838,8 +845,8 @@ test("board cards open the shared work item UI in a drawer with one Delegate men
     window.document.getElementById("workItemDrawerExpand").click();
     await settle();
     assert.equal(drawer.classList.contains("open"), false);
-    assert.equal(window.document.getElementById("homePanel").hasAttribute("aria-hidden"), false);
-    assert.equal(window.document.getElementById("homePanel").hasAttribute("inert"), false);
+    assert.equal(window.document.getElementById("homePanel").closest(".canvas-layout").hasAttribute("aria-hidden"), false);
+    assert.equal(window.document.getElementById("homePanel").closest(".canvas-layout").hasAttribute("inert"), false);
     assert.equal(backgroundControl.closest("footer").hasAttribute("aria-hidden"), false);
     assert.equal(backgroundControl.closest("footer").hasAttribute("inert"), false);
     assert.equal(window.document.activeElement, backgroundControl);
@@ -1887,6 +1894,70 @@ test("opening a child task from the main work-item section preserves the parent 
     assert.match(state.workItemRequests.at(-1), /workItemProject=Other\+Project/);
 });
 
+test("sidebar opens a child once, reveals it from details, and retains it when the parent closes", describeDom, async (t) => {
+    const { window, state } = await boot({ homeWorkItems: [400], workItemsById: {
+        400: { type: "User Story", title: "Prepare widgets", relations: [{ name: "Children", links: [
+            { id: 501, project: "Other Project", kind: "work-item", label: "Task 501", title: "Build widget", state: "Active" },
+        ] }] },
+        501: { type: "Task", title: "Build widget", project: "Other Project" },
+    } });
+    t.after(() => window.close());
+    await openFromHome(window, 400);
+    assert.equal(state.workItemRequests.length, 1, "child summaries require no extra fetch");
+    let childButton = bar(window).querySelector(".navigation-children .view-tab-label");
+    childButton.click();
+    await settle();
+    assert.equal(activeTitle(window), "Task 501");
+    assert.match(state.workItemRequests.at(-1), /workItemProject=Other\+Project/);
+    assert.equal(bar(window).querySelectorAll('.view-tab-label[aria-label="Task 501: Build widget"]').length, 1);
+    await clickTab(window, 1);
+    bar(window).querySelector(".navigation-disclosure").click();
+    assert.equal(bar(window).querySelector(".navigation-children").hidden, true);
+    window.document.querySelector(".tab-panel:not([hidden]) .child-work-section .relation-link").click();
+    await settle();
+    assert.equal(bar(window).querySelector(".navigation-children").hidden, false);
+    assert.equal(state.workItemRequests.length, 2, "reopening the child uses its existing view");
+    await closeTab(window, 1);
+    assert.deepEqual(titles(window), ["Home", "Task 501"]);
+    assert.equal(activeTitle(window), "Task 501");
+    assert.equal(bar(window).querySelector(".view-tab.active").closest(".navigation-children"), null);
+    assert.equal(visiblePanels(window).length, 1);
+});
+
+test("closing a nested child preserves its link and protects unsaved edits", describeDom, async (t) => {
+    const { window } = await boot({ homeWorkItems: [400], workItemsById: {
+        400: { relations: [{ name: "Children", links: [{ id: 501, label: "Task 501", title: "Build widget" }] }] },
+    } });
+    t.after(() => window.close());
+    await openFromHome(window, 400);
+    bar(window).querySelector(".navigation-children .view-tab-label").click();
+    await settle();
+    const panel = visiblePanels(window)[0];
+    panel.querySelector(".work-item-title-row .inline-edit").click();
+    await settle();
+    const input = panel.querySelector('input[type="text"], input:not([type])');
+    assert.ok(input, "title editor is available");
+    input.value = "Unsaved widget title";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    let confirmations = 0;
+    window.confirm = () => { confirmations += 1; return false; };
+    await closeTab(window, 2);
+    assert.equal(confirmations, 1);
+    assert.equal(input.value, "Unsaved widget title");
+    await closeTab(window, 1);
+    assert.equal(visiblePanels(window)[0], panel, "closing the parent retains the child's editor");
+    assert.equal(input.value, "Unsaved widget title");
+    window.confirm = () => true;
+    await openFromHome(window, 400);
+    await closeTab(window, 1);
+    const childLink = bar(window).querySelector(".navigation-children .view-tab-label");
+    assert.ok(childLink, "closing a child view keeps its relation available");
+    childLink.click();
+    await settle();
+    assert.equal(activeTitle(window), "Task 501");
+    assert.equal(visiblePanels(window)[0].querySelector(".editor-save"), null, "confirmed discarded edits do not return");
+});
+
 test("following a pull request link inside a work item opens a canvas tab", describeDom, async () => {
     const relations = [{
         name: "Development",
@@ -2046,6 +2117,42 @@ test("a canvas opened on a pull request keeps Home behind it and claims nothing 
     assert.deepEqual(marks(window), [false, false], "a referenced pull request is not asserted to be the branch's");
 });
 
+test("reference-opened work items route sidebar children and reuse the resolved item", describeDom, async (t) => {
+    const { window, state } = await boot({ workItemReference: true, homeWorkItems: [900], relations: [{
+        name: "Children", links: [{ id: 501, project: "Other Project", label: "Task 501", title: "Build widget" }],
+    }] });
+    t.after(() => window.close());
+    bar(window).querySelector(".navigation-children .view-tab-label").click();
+    await settle();
+    assert.equal(activeTitle(window), "Task 501");
+    const request = new URL(state.workItemRequests.at(-1), "http://localhost");
+    assert.equal(request.searchParams.get("organization"), "example");
+    assert.equal(request.searchParams.get("workItemProject"), "Other Project");
+    await clickTab(window, 0);
+    await openFromHome(window, 900);
+    assert.equal(activeTitle(window), "Bug 900");
+    assert.equal(state.currentWorkItemCalls, 1);
+    assert.equal(state.workItemRequests.length, 1);
+    assert.equal(tabEls(window).length, 3);
+});
+
+test("a late parent load nests an already opened child once", describeDom, async (t) => {
+    const gate = deferred();
+    const { window } = await boot({ homeWorkItems: [400, 501], holdWorkItems: { 400: gate.promise }, workItemsById: {
+        400: { relations: [{ name: "Children", links: [{ id: 501, label: "Task 501", title: "Build widget" }] }] },
+    } });
+    t.after(() => window.close());
+    await openFromHome(window, 400);
+    await openFromHome(window, 501);
+    assert.equal(bar(window).querySelector(".view-tab.active").closest(".navigation-children"), null);
+    gate.resolve();
+    await settle();
+    assert.equal(activeTitle(window), "Task 501");
+    assert.ok(bar(window).querySelector(".view-tab.active").closest(".navigation-children"));
+    assert.equal(tabEls(window).length, 3);
+    assert.equal(visiblePanels(window).length, 1);
+});
+
 test("a slow tab load does not scroll whichever tab the user switched to", describeDom, async () => {
     // !102 is held open so the user can switch away mid-load, which is a normal
     // interaction on a slow connection rather than a stress case.
@@ -2123,46 +2230,31 @@ test("middle-click closes a tab", describeDom, async () => {
     assert.deepEqual(titles(window), ["Home", "PR !102"], "middle-click cannot close Home");
 });
 
-test("the tab bar is wired up for assistive technology", describeDom, async () => {
-    const { window } = await boot({
-        branch: "feature",
-        leadPr: { id: 101, title: "Branch PR" },
-        relatedWorkItems: [400],
-    });
+test("the sidebar is wired up for assistive technology", describeDom, async () => {
+    const { window } = await boot({ branch: "feature", leadPr: { id: 101, title: "Branch PR" }, relatedWorkItems: [400] });
     await openFromHome(window, "!101");
-    await clickTab(window, 0);
     await openFromHome(window, "400");
-
-    const list = bar(window);
-    // A tablist may only contain tabs; the wrappers that carry the close button
-    // are presentational, so nothing else may sit directly inside it.
-    for (const child of list.children) {
-        assert.equal(child.getAttribute("role"), "presentation", "tab wrappers stay presentational");
-        const tabRoles = [...child.children].filter((n) => n.getAttribute("role") === "tab");
-        assert.equal(tabRoles.length, 1, "each wrapper holds exactly one tab");
-    }
-
+    assert.equal(bar(window).tagName, "NAV");
+    assert.equal(bar(window).getAttribute("aria-label"), "Azure DevOps views");
+    assert.equal(bar(window).querySelector('[role="tab"]'), null);
     for (const el of tabEls(window)) {
-        const label = el.querySelector('[role="tab"]');
+        const label = el.querySelector(".view-tab-label");
         const panel = window.document.getElementById(label.getAttribute("aria-controls"));
-        assert.ok(panel, `aria-controls must resolve for ${label.textContent}`);
-        assert.equal(panel.getAttribute("aria-labelledby"), label.id, "the panel names itself from its tab");
-        assert.equal(label.getAttribute("aria-selected"), String(el.classList.contains("active")));
+        assert.ok(panel);
+        assert.equal(panel.getAttribute("role"), "region");
+        assert.equal(panel.getAttribute("aria-labelledby"), label.id);
+        assert.equal(label.getAttribute("aria-current"), el.classList.contains("active") ? "page" : null);
     }
-
-    // The branch marker belongs to the tab's accessible name, not beside it.
-    const branchTab = tabEls(window).find((el) => el.querySelector(".view-tab-branch"));
-    assert.ok(branchTab, "the branch pull request is marked");
-    assert.equal(branchTab.querySelector(".view-tab-branch").parentElement.getAttribute("role"), "tab");
-
-    const close = branchTab.querySelector(".view-tab-close");
-    assert.equal(close.getAttribute("role"), null, "the close button is not itself a tab");
-    assert.match(close.getAttribute("aria-label"), /close/i);
-    assert.match(styles, /\.view-tabs \{[^}]*overflow-x: auto[^}]*overflow-y: hidden/);
-    assert.match(styles, /\.view-tabs \{[^}]*scrollbar-width: none/);
-    assert.match(styles, /\.view-tabs:hover, \.view-tabs:focus-within \{ scrollbar-width: thin; \}/);
-    assert.match(styles, /\.view-tabs::-webkit-scrollbar \{ width: 0; height: 0; \}/);
-    assert.match(styles, /\.view-tab \{[^}]*flex: 0 0 auto/);
+    const branchTab = tabEls(window).find(el => el.querySelector(".view-tab-branch"));
+    assert.ok(branchTab);
+    assert.match(branchTab.querySelector(".view-tab-label").getAttribute("aria-label"), /current branch/);
+    assert.match(branchTab.querySelector(".view-tab-close").getAttribute("aria-label"), /Close/);
+    const toggle = window.document.getElementById("navigationToggle");
+    toggle.click();
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    assert.equal(window.document.getElementById("canvasContent").classList.contains("navigation-collapsed"), true);
+    toggle.click();
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
 });
 
 test("switching to a slow tab and away again does not scroll the tab left behind", describeDom, async () => {
@@ -3022,22 +3114,15 @@ test("a caret-only trigger centres its caret instead of leaving it in the label 
     assert.match(styles, /button\.reviewer-menu-trigger \{[^}]*justify-content: center/);
 });
 
-test("the setup notice does not have the view tabs pulled up into it", describeDom, async () => {
+test("the setup notice stays above the sidebar and details layout", describeDom, async () => {
     const { window } = await boot({
         remote: { isAzureDevOps: false, remoteName: "origin", remoteUrl: "https://github.com/contoso/widgets.git" },
         connections: [{ source: "last-used", organization: "fabrikam", project: "Project", isDefault: false, isRemote: false, requiresProject: false }],
     });
-
     const note = window.document.getElementById("setupWarning");
-    const bar = window.document.querySelector(".view-bar");
     assert.equal(note.hidden, false);
-    assert.equal(note.nextElementSibling, bar, "the notice sits directly above the view bar");
-
-    // The bar is pulled up by a negative top margin so the tabs sit flush with the
-    // top of the canvas. That pull has to be cancelled when the notice is above
-    // it, or the tabs overlap the notice.
-    assert.match(styles, /\.view-bar \{[^}]*margin: -16px -16px 4px/);
-    assert.match(styles, /#setupWarning:not\(\[hidden\]\) \+ \.view-bar \{ margin-top: 12px; \}/);
+    assert.equal(note.nextElementSibling.className, "canvas-layout");
+    assert.ok(note.nextElementSibling.contains(bar(window)));
 });
 
 test("the reviewer and work item context uses clear bordered cards", describeDom, async () => {

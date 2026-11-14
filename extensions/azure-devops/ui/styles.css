@@ -1,4 +1,4 @@
-:root { color-scheme: light dark; --content-max-width: 1200px; }
+:root { color-scheme: light dark; --content-max-width: 1500px; }
 body { margin: 0; background: var(--background-color-default, #fff); color: var(--text-color-default, #1f2328); font: var(--text-body-medium, 14px)/var(--leading-body-medium, 20px) var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); }
 [hidden] { display: none !important; }
 /* The canvas can be docked at any width. Past a comfortable reading measure the
@@ -36,28 +36,48 @@ section { border: 1px solid var(--border-color-default, #d0d7de); border-radius:
   .loading-spinner-svg, .loading-spinner-arc { animation: none; }
   .loading-spinner-arc { stroke-dasharray: 22 35; }
 }
-.view-bar { display: flex; align-items: stretch; margin: -16px -16px 4px; padding: 0 26px; border-bottom: 1px solid var(--borderColor-muted, var(--border-color-muted, #d8dee4)); }
-/* The bar's negative top margin cancels the page padding so the tabs sit flush
-   with the top of the canvas, which is right while the bar leads the content.
-   With the setup notice above it that same pull drags the tabs up into the
-   notice, so it is cancelled and replaced with real spacing. */
-#setupWarning:not([hidden]) + .view-bar { margin-top: 12px; }
-.view-tabs { display: flex; gap: 24px; flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; }
-.view-tabs:hover, .view-tabs:focus-within { scrollbar-width: thin; }
-.view-tabs::-webkit-scrollbar { width: 0; height: 0; }
-.view-tabs:hover::-webkit-scrollbar, .view-tabs:focus-within::-webkit-scrollbar { height: 6px; }
-.view-tabs::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--border-color-emphasis, #8c959f); }
-.view-tabs::-webkit-scrollbar-track { background: transparent; }
-.view-tab { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 4px; max-width: 240px; min-height: 48px; cursor: pointer; }
-.view-tab.active::after { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--bgColor-accent-emphasis, var(--background-color-accent-emphasis, #0969da)); pointer-events: none; }
-.view-tab-label { min-width: 0; border: 0; border-radius: 6px; padding: 6px 2px; overflow: hidden; color: var(--fgColor-muted, var(--text-color-muted, #57606a)); background: transparent; font-weight: var(--font-weight-normal, 400); text-overflow: ellipsis; white-space: nowrap; }
-.view-tab-label:hover { color: var(--fgColor-default, var(--text-color-default, #1f2328)); background: var(--bgColor-neutral-muted, var(--background-color-neutral-muted, rgba(127, 127, 127, .16))); }
-.view-tab.active .view-tab-label { color: var(--fgColor-default, var(--text-color-default, #1f2328)); font-weight: var(--font-weight-semibold, 600); }
-/* Marks the pull request belonging to the checked-out branch, so it stays
-   identifiable once several pull request tabs are open. */
+.canvas-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; align-items: start; }
+.workspace-content { min-width: 0; }
+.view-bar { position: sticky; top: 16px; display: flex; flex-direction: column; box-sizing: border-box; min-width: 0; max-height: calc(100vh - 32px); min-height: min(600px, calc(100vh - 32px)); padding: 8px 12px 8px 0; border-right: 1px solid var(--border-color-muted, #d8dee4); }
+.navigation-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding: 0 8px 8px; }
+.navigation-header strong { font-size: 13px; color: var(--text-color-muted, #57606a); }
+#navigationToggle { display: grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 1px solid var(--border-color-muted, #d8dee4); background: transparent; color: var(--text-color-muted, #57606a); font-size: 20px; }
+.view-tabs { min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: thin; }
+.navigation-list, .navigation-children { margin: 0; padding: 0; list-style: none; }
+.navigation-children { margin-left: 18px; padding-left: 8px; border-left: 1px solid var(--border-color-muted, #d8dee4); }
+.navigation-group + .navigation-group { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color-muted, #d8dee4); }
+.navigation-heading { margin: 0; padding: 4px 10px 10px; font-size: 13px; line-height: 20px; font-weight: 600; }
+.view-tab { position: relative; display: flex; align-items: center; gap: 2px; min-width: 0; min-height: 54px; padding: 2px 4px; border-radius: 6px; }
+.view-tab.active { background: var(--background-color-accent-muted, rgba(9, 105, 218, .12)); }
+.view-tab.active::before { content: ""; position: absolute; inset: 6px auto 6px 0; width: 3px; border-radius: 2px; background: var(--background-color-accent-emphasis, #0969da); }
+.view-tab-label { display: flex; flex: 1 1 auto; align-items: center; gap: 9px; min-width: 0; border: 0; border-radius: 4px; padding: 8px 2px; color: var(--text-color-default, #1f2328); background: transparent; text-align: left; font-weight: 400; }
+.view-tab-label:hover, .view-tab-close:hover, .navigation-disclosure:hover, #navigationToggle:hover { background: var(--background-color-neutral-muted, rgba(127, 127, 127, .16)); }
+.navigation-copy { display: grid; gap: 2px; min-width: 0; }
+.navigation-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 13px; line-height: 18px; font-weight: 600; }
+.navigation-meta { color: var(--text-color-muted, #57606a); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; }
+.navigation-icon { display: inline-flex; flex: 0 0 16px; color: var(--text-color-accent, #0969da); }
+.navigation-icon svg { width: 16px; height: 16px; }
+.navigation-icon-task, .navigation-icon-pull-request { color: var(--text-color-done, #8250df); }
+.navigation-icon-bug { color: var(--text-color-danger, #cf222e); }
+.navigation-icon-home { color: var(--text-color-default, #1f2328); }
+.navigation-disclosure, .navigation-disclosure-space { flex: 0 0 16px; width: 16px; }
+.navigation-disclosure { display: grid; place-items: center; height: 28px; padding: 0; border: 0; background: transparent; color: var(--text-color-muted, #57606a); font-size: 20px; line-height: 1; }
+.navigation-disclosure[aria-expanded="true"] { transform: rotate(90deg); }
 .view-tab-branch { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--background-color-accent-emphasis, #0969da); }
-.view-tab-close { flex: none; border: 0; border-radius: 4px; padding: 0; width: 20px; height: 20px; line-height: 1; color: var(--fgColor-muted, var(--text-color-muted, #57606a)); background: transparent; display: inline-flex; align-items: center; justify-content: center; }
-.view-tab-close:hover { background: var(--bgColor-neutral-muted, var(--background-color-neutral-muted, rgba(127, 127, 127, .24))); color: var(--fgColor-default, var(--text-color-default, #1f2328)); }
+.view-tab-close { display: grid; place-items: center; flex: 0 0 24px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-color-muted, #57606a); }
+.view-tab-close svg { width: 12px; height: 12px; }
+.view-bar button:focus-visible { outline: 2px solid var(--color-focus-outline, #0969da); outline-offset: -2px; }
+.navigation-collapsed .canvas-layout { grid-template-columns: 44px minmax(0, 1fr); }
+.navigation-collapsed .view-tabs, .navigation-collapsed .navigation-header strong { display: none; }
+.navigation-collapsed .navigation-header { padding: 0; justify-content: center; }
+.canvas-layout:has(.view-bar[hidden]) { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 760px) {
+  .canvas-layout, .navigation-collapsed .canvas-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .view-bar { position: static; min-height: 0; max-height: none; padding: 6px; border: 1px solid var(--border-color-muted, #d8dee4); border-radius: 8px; }
+  .view-tabs { max-height: 40vh; }
+  .navigation-collapsed .navigation-header { padding: 0 8px; justify-content: space-between; }
+  .navigation-collapsed .navigation-header strong { display: block; }
+}
 #homePanel, .tab-panel { border: 0; border-radius: 0; padding: 8px; background: transparent; }
 .tab-panel { container-type: inline-size; }
 .board-panel { padding: 0; overflow: hidden; }
@@ -558,8 +578,6 @@ footer { padding: 0 16px 16px; }
 @media (max-width: 640px) {
   .pr-summary { gap: 16px; }
   .work-item-skeleton-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .view-bar { padding: 0 16px; }
-  .view-tabs { gap: 16px; }
   .pr-overview { padding-bottom: 14px; }
   .pr-title { font-size: var(--text-title-medium, 20px); line-height: var(--leading-title-medium, 28px); }
   .pr-header-actions { justify-content: flex-end; }

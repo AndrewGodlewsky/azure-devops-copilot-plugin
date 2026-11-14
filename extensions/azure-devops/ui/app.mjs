@@ -1,6 +1,7 @@
 import { renderPullRequest } from "./pull-request-view.mjs";
 import { renderWorkItem } from "./work-item-view.mjs";
 import { renderHome } from "./home-view.mjs";
+import { renderNavigation } from "./navigation-view.mjs";
 import { renderConnectionPanel } from "./connection-view.mjs";
 import { AGENCY_AUTH_ENABLED, normalizeFeatureFlags } from "../common.mjs";
 
@@ -15,6 +16,9 @@ const homeContent = document.getElementById("homeContent");
 const tabPanels = document.getElementById("tabPanels");
 const viewTabs = document.getElementById("viewTabs");
 const viewBar = document.querySelector(".view-bar");
+const navigationToggle = document.getElementById("navigationToggle");
+const collapsedNavigationItems = new Set();
+let navigationCollapsed = window.matchMedia?.("(max-width: 760px)").matches || false;
 const authOutput = document.getElementById("authOutput");
 const logsPanel = document.getElementById("logsPanel");
 const connectionPanel = document.getElementById("connectionPanel");
@@ -44,7 +48,7 @@ let homeLoaded = false;
 let logs = [];
 let enabledFeatures = normalizeFeatureFlags();
 
-// Tabs behave like browser tabs: every item opens in its own tab and is closed
+// Each sidebar item keeps an independent detail view and can be closed
 // independently. A tab is { id, entry, panel, content, data, rendered, token,
 // timelineFilter, scrollTop, closable, editMode, dirty }, where entry is the
 // { view, id } it shows, editMode is whether the whole detail view is being
@@ -92,21 +96,6 @@ function element(tagName, className, text) {
     if (className) node.className = className;
     if (text !== undefined) node.textContent = String(text);
     return node;
-}
-
-function closeIcon() {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("data-icon-source", "octicon");
-    svg.setAttribute("data-icon-name", "x");
-    svg.setAttribute("viewBox", "0 0 16 16");
-    svg.setAttribute("width", "12");
-    svg.setAttribute("height", "12");
-    svg.setAttribute("fill", "currentColor");
-    svg.setAttribute("aria-hidden", "true");
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", "M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z");
-    svg.append(path);
-    return svg;
 }
 
 function loadingSpinner(compact = false) {
@@ -412,54 +401,28 @@ function isBranchPullRequestTab(tab) {
     return Boolean(branchPullRequestId) && entry?.view === "pull-request" && Number(entry.id) === branchPullRequestId;
 }
 
-function renderTabBar() {
-    viewTabs.replaceChildren();
-    for (const tab of tabs) {
-        const isActive = tab.id === activeTabId;
-        // The wrapper is presentational so the tablist still contains only tabs;
-        // the close button is a separate control rather than part of the tab.
-        const item = element("div", `view-tab${isActive ? " active" : ""}`);
-        item.setAttribute("role", "presentation");
-
-        const label = element("button", "view-tab-label", tabTitle(tab));
-        label.type = "button";
-        label.id = `${tab.id}-tab`;
-        label.setAttribute("role", "tab");
-        label.setAttribute("aria-selected", String(isActive));
-        label.setAttribute("aria-controls", tab.panel.id);
-        label.title = tab.data?.title || tabTitle(tab);
-        label.addEventListener("click", () => activateTab(tab.id));
-        // The marker lives inside the tab so the tablist contains only tabs, and
-        // so it becomes part of the tab's accessible name rather than a stray
-        // image beside it.
-        if (isBranchPullRequestTab(tab)) {
-            const badge = element("span", "view-tab-branch");
-            badge.setAttribute("role", "img");
-            badge.setAttribute("aria-label", "current branch");
-            label.append(badge);
-        }
-        tab.panel.setAttribute("aria-labelledby", label.id);
-        item.append(label);
-
-        if (tab.closable) {
-            const close = element("button", "view-tab-close");
-            close.type = "button";
-            close.setAttribute("aria-label", `Close ${tabTitle(tab)}`);
-            close.append(closeIcon());
-            close.title = `Close ${tabTitle(tab)}`;
-            close.addEventListener("click", (event) => {
-                event.stopPropagation();
-                closeTab(tab.id);
-            });
-            item.append(close);
-        }
-
-        viewTabs.append(item);
-    }
-    // Home is the stable entry point for this canvas, so keep the tab strip
-    // visible even before another item has been opened.
-    viewTabs.hidden = tabs.length === 0;
+function renderTabBar({ revealActive = false } = {}) {
+    renderNavigation(viewTabs, {
+        tabs, activeTabId, collapsed: collapsedNavigationItems, sameEntry, tabTitle,
+        isBranchPullRequestTab, revealActive,
+        onActivate: activateTab,
+        onOpenChild: openWorkItem,
+        onClose: closeTab,
+    });
 }
+
+function setNavigationCollapsed(collapsed) {
+    navigationCollapsed = collapsed;
+    canvasContent.classList.toggle("navigation-collapsed", collapsed);
+    navigationToggle.setAttribute("aria-expanded", String(!collapsed));
+    navigationToggle.setAttribute("aria-label", collapsed ? "Expand navigation" : "Collapse navigation");
+    navigationToggle.title = collapsed ? "Expand navigation" : "Collapse navigation";
+    navigationToggle.textContent = collapsed ? "\u00bb" : "\u00ab";
+    if (collapsed && viewTabs.contains(document.activeElement)) navigationToggle.focus();
+}
+
+navigationToggle.addEventListener("click", () => setNavigationCollapsed(!navigationCollapsed));
+setNavigationCollapsed(navigationCollapsed);
 
 function createTab(entry, { closable = true } = {}) {
     tabSequence += 1;
@@ -488,7 +451,7 @@ function createTab(entry, { closable = true } = {}) {
         // already rendered, and so scroll position can be restored per tab.
         tab.panel = element("section", "tab-panel");
         tab.panel.id = `${tab.id}-panel`;
-        tab.panel.setAttribute("role", "tabpanel");
+        tab.panel.setAttribute("role", "region");
         tab.panel.setAttribute("aria-live", "polite");
         tab.panel.hidden = true;
         tab.content = element("div", entry.view === "board" ? "board-tab-content" : "cards");
@@ -520,7 +483,7 @@ async function activateTab(id) {
         outgoing.scrollTop = window.scrollY;
     }
     activeTabId = id;
-    renderTabBar();
+    renderTabBar({ revealActive: true });
     showActivePanel();
     const tab = activeTab();
     if (!tab) {
@@ -558,7 +521,7 @@ function closeTab(id) {
     // Focus the neighbour the closed tab occupied, falling back to its left.
     const next = tabs[index] || tabs[index - 1] || null;
     activeTabId = next?.id || "";
-    renderTabBar();
+    renderTabBar({ revealActive: true });
     showActivePanel();
     if (next) {
         applyTab(next).then(() => {
@@ -589,7 +552,7 @@ async function openEntry(entry) {
     }
     const tab = createTab(entry);
     activeTabId = tab.id;
-    renderTabBar();
+    renderTabBar({ revealActive: true });
     showActivePanel();
     // Scrolled before the load so a slow fetch cannot yank the viewport of a tab
     // the user has since switched to.
@@ -620,7 +583,7 @@ async function applyTab(tab) {
     } else {
         await loadWorkItemIntoTab(tab, entry, token);
     }
-    renderTabBar();
+    renderTabBar({ revealActive: true });
 }
 
 function releaseBoardToken(token) {
@@ -1403,6 +1366,10 @@ async function saveWorkItemFields(tab, fields) {
 
 function loadedWorkItemTab(tab, workItem, entry) {
     tab.data = workItem;
+    if (entry?.current) {
+        tab.entry = { ...entry, id: Number(workItem.id), workItemProject: workItem.project || entry.workItemProject || "" };
+        entry = tab.entry;
+    }
     // A reference-opened tab has no id of its own, so the entry is adopted rather
     // than rebuilt; otherwise the rendered marker would never match the entry.
     tab.rendered = entry?.current
@@ -1879,6 +1846,7 @@ function resetTabs() {
         }
     }
     tabs = [];
+    collapsedNavigationItems.clear();
     activeTabId = "";
     homePanel.hidden = true;
     tabPanels.replaceChildren();
@@ -2170,7 +2138,7 @@ async function refresh() {
             // Keep Home behind a directly opened work item, matching the pull
             // request flow and giving linked items a stable place to return to.
             // The id lives in the canvas input, so the server resolves it.
-            await openEntry({ view: "work-item", id: 0, current: true });
+            await openEntry({ ...entryForConnection("work-item", 0, defaultEntryConnection()), current: true });
             return;
         }
 
@@ -2301,16 +2269,15 @@ if (AGENCY_AUTH_ENABLED) {
     signInAgencyButton.addEventListener("click", () => startAuth("agency"));
 }
 signOutButton.addEventListener("click", signOut);
-// Middle-click closes a tab, matching the browser convention the tabs imitate.
+// Open views can also be closed with the middle mouse button.
 viewTabs.addEventListener("auxclick", (event) => {
     if (event.button !== 1) {
         return;
     }
     const item = event.target.closest(".view-tab");
-    const index = item ? [...viewTabs.children].indexOf(item) : -1;
-    if (index >= 0 && tabs[index]) {
+    if (item?.dataset.tabId) {
         event.preventDefault();
-        closeTab(tabs[index].id);
+        closeTab(item.dataset.tabId);
     }
 });
 
