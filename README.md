@@ -1,6 +1,6 @@
 # Andrew's Azure DevOps Copilot Plugin [Preview]
 
-This is Andrew Godlewsky's fork of the [Microsoft Azure DevOps Copilot Plugin](https://github.com/microsoft/azure-devops-copilot-plugin). It brings your Azure Boards work into the [GitHub Copilot App](https://github.com/apps/desktop) so you can review and act on it without leaving your Copilot session.
+This is [Andrew Godlewsky's Azure DevOps Copilot Plugin](https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin). It brings your Azure Boards work into the [GitHub Copilot App](https://github.com/apps/desktop) so you can review and act on it without leaving your Copilot session. Follow the installation steps below to install this fork and receive its updates.
 
 > [!WARNING]
 > This is a preview release. It is not supported for production workloads and may change without notice.
@@ -19,17 +19,25 @@ This is Andrew Godlewsky's fork of the [Microsoft Azure DevOps Copilot Plugin](h
 
 ## Installation
 
-### Marketplace
+### Install Andrew's fork
 
-Add `https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin` as a Copilot marketplace, then select **andrewgodlewsky-azure-devops** from the **andrewgodlewsky-plugins** catalog.
+1. Add this repository as a marketplace in the GitHub Copilot App. Copy this URL into the marketplace source field:
 
-For the **Install plugin** dialog, enter:
+   ```text
+   https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin
+   ```
 
-```text
-andrewgodlewsky-azure-devops@andrewgodlewsky-plugins
-```
+2. Select **andrewgodlewsky-azure-devops** from the **andrewgodlewsky-plugins** catalog. If using the **Install plugin** dialog, enter this exact value in **Name**, then choose **Install**:
 
-This fork uses distinct plugin and marketplace names so it can be registered alongside Microsoft's marketplace.
+   ```text
+   andrewgodlewsky-azure-devops@andrewgodlewsky-plugins
+   ```
+
+The repository URL registers the marketplace; the `plugin@marketplace` value installs the plugin from that marketplace. Both steps use Andrew's fork.
+
+### If you already installed the original plugin
+
+Install **andrewgodlewsky-azure-devops** using the steps above. Updating Microsoft's original plugin does not switch it to this fork. The distinct plugin and marketplace names allow both to be registered; select Andrew's plugin when installing or updating this version.
 
 ## Usage
 
@@ -57,3 +65,7 @@ node scripts/workspace-smoke.mjs
 ```
 
 Set `SMOKE_OUTPUT` to choose a screenshot folder; the default `.workspace-smoke` folder is ignored by Git. This test covers creation and retry, search, draft recovery, conflict review, screenshot uploads, board moves and assignment. It does not sign in to Azure DevOps or modify live work items.
+
+## Upstream attribution
+
+This project is a fork of the [Microsoft Azure DevOps Copilot Plugin](https://github.com/microsoft/azure-devops-copilot-plugin). That link is provided for attribution; the installation source for this fork is Andrew's repository listed above.
