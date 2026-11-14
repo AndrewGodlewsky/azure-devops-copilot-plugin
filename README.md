@@ -16,6 +16,7 @@ This is [Andrew Godlewsky's Azure DevOps Copilot Plugin](https://github.com/Andr
 - Navigate open stories and their child tasks in an expandable vertical sidebar.
 - See linked child tasks in a work item's **Tasks and child work items** section, and click a task to open its details.
 - **Send to chat** from an open story, task, feature or other work item to share its link and saved context with your current Copilot conversation.
+- **Suggest tasks** from a story or feature, discuss the proposals with Copilot, then edit and select the tasks to create beneath it.
 - Work through an interactive Azure DevOps canvas in the GitHub Copilot App.
 
 ## Installation
@@ -54,7 +55,7 @@ Choose a project for Home, Board and creation. An organization connection can se
 
 Drafts and preferences are saved on this device under `~/.copilot/azure-devops-canvas/workspace`, separated by signed-in account. A saved draft is offered for restoration before editing or commenting; it does not update Azure DevOps until you save or post. Files attach immediately and have a 60 MiB per-file limit. While the canvas is visible, it checks for updates every 30 seconds and when you return to it.
 
-Reusable templates and Copilot-assisted planning are tracked in issues #7 and #8 and remain deferred.
+Reusable templates and broader Copilot-assisted planning remain tracked in issues #7 and #8. The task-suggestion workflow below is available now.
 
 ### Send a work item to Copilot
 
@@ -70,6 +71,33 @@ can then ask it to plan or implement the story. If Copilot is already working,
 the message queues for its next turn. Sending does not update ADO or open a new
 conversation. If delivery cannot be confirmed, check the chat before retrying.
 
+### Suggest child tasks with Copilot
+
+Open a saved story, issue, product backlog item, requirement, feature or epic and
+select **Suggest tasks**. Copilot receives its saved context and existing child
+summaries in the current conversation. It can inspect the current repository
+when relevant and returns up to 12 proposals to a review panel inside the item.
+Missing requirements appear as questions; answer or discuss changes in chat to
+revise the proposals. No separate AI API key is needed.
+
+Review each task's title, description and **Done when** condition. Edit the text,
+deselect anything you do not want, and choose the assignment. By default, tasks
+inherit the parent's saved assignment, area and iteration. Select **Create
+selected tasks** to create them in ADO with a parent link. Asking for suggestions
+or receiving revisions does not create work items.
+
+Local proposal edits stay intact when Copilot sends revisions; choose **Replace
+with revised suggestions** to adopt the new proposals. Unsaved story edits are preserved but are not used to
+generate or create tasks. If the saved requirements change, generate a new draft.
+Existing child titles are checked before creation to catch exact duplicates.
+Successful rows show their new task IDs; if creation cannot be confirmed, check
+ADO before making a replacement. That row will not be retried automatically.
+
+Suggestion drafts last only for the current canvas session. Closing the review
+panel or switching between items keeps them. Local proposal edits are not saved
+across a canvas reload, and all suggestion drafts are discarded when the canvas
+session ends. This is separate from the saved work-item edit drafts described above.
+
 ## Development checks
 
 From `extensions/azure-devops`, run `npm test` for unit and DOM integration coverage. The repeatable browser smoke test runs the real UI against fictional local API fixtures and saves desktop and narrow screenshots:
@@ -81,7 +109,7 @@ $env:BRAVE_PATH = 'C:\Program Files\BraveSoftware\Brave-Browser\Application\brav
 node scripts/workspace-smoke.mjs
 ```
 
-Set `SMOKE_OUTPUT` to choose a screenshot folder; the default `.workspace-smoke` folder is ignored by Git. This test covers personal defaults, explicit wider search and reset, creation and retry, draft recovery, conflict review, screenshot uploads, board moves, assignment inside item editing, and Send to chat feedback and draft preservation. It does not sign in to Azure DevOps or modify live work items. HTTP tests verify the chat payload against a stub Copilot session; confirming delivery in the installed Copilot App requires a live host session.
+Set `SMOKE_OUTPUT` to choose a screenshot folder; the default `.workspace-smoke` folder is ignored by Git. This test covers personal defaults, explicit wider search and reset, creation and retry, draft recovery, conflict review, screenshot uploads, board moves, assignment inside item editing, Send to chat feedback, and task suggestion review, editing, selection and creation while preserving unsaved story edits. It does not sign in to Azure DevOps or modify live work items. HTTP tests verify chat requests and proposal callbacks against a stub Copilot session; confirming the complete conversation and task-creation flow in the installed Copilot App requires a live host session.
 
 ## Upstream attribution
 

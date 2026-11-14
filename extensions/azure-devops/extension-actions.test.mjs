@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { SourceTextModule, SyntheticModule, createContext } from "node:vm";
 import { hasWorkItemReference } from "./work-item.mjs";
+import { taskSuggestionActionSchema } from "./task-suggestions.mjs";
 
 const source = readFileSync(new URL("./extension.mjs", import.meta.url), "utf8");
 const hasPreviewFeatures = source.includes("\"./azdo-board.mjs\"");
@@ -13,6 +14,7 @@ async function loadExtension({ failBoardCleanup = false, failDelegationCleanup =
     let lifecycle;
     let opened;
     let serverClosed = false;
+    let proposed;
     const cleanupErrors = [];
     const context = createContext({
         console: {
@@ -41,11 +43,12 @@ async function loadExtension({ failBoardCleanup = false, failDelegationCleanup =
         { context },
     );
     const server = new SyntheticModule(
-        ["canvasTitle", "serializeCanvasInput", "setCopilotSession", "startServer"],
+        ["canvasTitle", "serializeCanvasInput", "setCopilotSession", "startServer", "receiveTaskSuggestions"],
         function initialize() {
             this.setExport("canvasTitle", () => "Azure DevOps");
             this.setExport("serializeCanvasInput", JSON.stringify);
             this.setExport("setCopilotSession", () => {});
+            this.setExport("receiveTaskSuggestions", async (entry, input) => { proposed = { entry, input }; return { ok: true }; });
             this.setExport("startServer", async (_instanceId, _input, handlers) => {
                 lifecycle = handlers;
                 return {
@@ -95,11 +98,13 @@ async function loadExtension({ failBoardCleanup = false, failDelegationCleanup =
         { context },
     );
     const module = new SourceTextModule(source, { context });
+    const suggestions = new SyntheticModule(["taskSuggestionActionSchema"], function () { this.setExport("taskSuggestionActionSchema", taskSuggestionActionSchema); }, { context });
     await module.link((specifier) => {
         if (specifier === "@github/copilot-sdk/extension") return sdk;
         if (specifier === "./azdo-board.mjs") return board;
         if (specifier === "./canvas-server.mjs") return server;
         if (specifier === "./work-item.mjs") return workItem;
+        if (specifier === "./task-suggestions.mjs") return suggestions;
         throw new Error(`Unexpected import: ${specifier}`);
     });
     await module.evaluate();
@@ -133,16 +138,17 @@ async function loadExtension({ failBoardCleanup = false, failDelegationCleanup =
         open: async (input = {}) => declaration.open({ ...canvasContext, input }),
         close: async () => declaration.onClose(canvasContext),
         serverClosed: () => serverClosed,
+        proposed: () => proposed,
     };
 }
 
-test("only work-item navigation and board actions are exposed", async () => {
+test("work-item navigation and draft-only task proposals are exposed", async () => {
     const { declaration } = await loadExtension();
     assert.deepEqual(
         Array.from(declaration.actions, (action) => action.name),
         hasPreviewFeatures
-            ? ["show_ado_work_item", "refresh_board"]
-            : ["show_ado_work_item"],
+            ? ["propose_ado_tasks", "show_ado_work_item", "refresh_board"]
+            : ["propose_ado_tasks", "show_ado_work_item"],
     );
     assert.equal(declaration.id, "azure-devops");
     assert.equal(declaration.displayName, "Azure DevOps");
@@ -156,6 +162,18 @@ test("only work-item navigation and board actions are exposed", async () => {
         { required: ["organization", "project", "workItemId"] },
         { required: ["org", "project", "workItemId"] },
     ]);
+});
+
+test("task proposal action dispatches to the open canvas instance", async () => {
+    const extension = await loadExtension();
+    await extension.open({ organization: "contoso", project: "Northwind", workItemId: 42 });
+    const input = { requestId: "draft-one", tasks: [], questions: ["Which records?"] };
+    await extension.invoke("propose_ado_tasks", input);
+    assert.equal(extension.proposed().entry.input.workItemId, 42);
+    assert.deepEqual(extension.proposed().input, input);
+    const action = extension.declaration.actions.find(action => action.name === "propose_ado_tasks");
+    assert.equal(action.inputSchema, taskSuggestionActionSchema);
+    assert.match(action.description, /Does not create/);
 });
 
 test("navigation actions reopen the canvas from URLs or organization references", async () => {

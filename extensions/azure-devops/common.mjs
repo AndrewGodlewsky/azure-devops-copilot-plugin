@@ -2,6 +2,7 @@
 // Preview-only surfaces remain disabled unless the user enables them from the
 // canvas logs panel. The distribution transform removes that panel's controls.
 export const AGENCY_AUTH_ENABLED = false;
+export const canSuggestTasks = type => ["user story", "product backlog item", "requirement", "issue", "feature", "epic"].includes(String(type || "").toLowerCase());
 export const DEFAULT_FEATURE_FLAGS = Object.freeze({
     boards: false,
     delegation: false,

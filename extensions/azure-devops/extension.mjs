@@ -4,7 +4,9 @@ import {
     serializeCanvasInput,
     setCopilotSession,
     startServer,
+    receiveTaskSuggestions,
 } from "./canvas-server.mjs";
+import { taskSuggestionActionSchema } from "./task-suggestions.mjs";
 import { hasWorkItemReference } from "./work-item.mjs";
 
 const servers = new Map();
@@ -75,6 +77,12 @@ session = await joinSession({
             description: "Browse and manage Azure Boards work items from a canvas.",
             inputSchema: canvasInputSchema,
             actions: [
+                {
+                    name: "propose_ado_tasks",
+                    description: "Fill or revise the task review panel for an existing Suggest tasks request. Accepts plain-text task proposals and clarification questions. Does not create or modify Azure DevOps work items; the user creates selected tasks in the canvas.",
+                    inputSchema: taskSuggestionActionSchema,
+                    handler: ctx => receiveTaskSuggestions(servers.get(ctx.instanceId), ctx.input || {}),
+                },
                 {
                     name: "show_ado_work_item",
                     description: "Show an Azure DevOps work item from its URL or organization, project, and ID.",

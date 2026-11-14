@@ -4,7 +4,8 @@ import { renderNavigation } from "./navigation-view.mjs";
 import { renderConnectionPanel } from "./connection-view.mjs";
 import { createWorkspaceView } from "./workspace-view.mjs";
 import { createDraftWriter, hasDraft, fieldValues, fieldsAfterSave } from "./draft-session.mjs";
-import { AGENCY_AUTH_ENABLED, normalizeFeatureFlags } from "../common.mjs";
+import { AGENCY_AUTH_ENABLED, normalizeFeatureFlags, canSuggestTasks } from "../common.mjs";
+import { createTaskSuggestionPanel } from "./task-suggestions-view.mjs";
 
 const startupSplash = document.getElementById("startupSplash");
 const startupTitle = document.getElementById("startupTitle");
@@ -241,7 +242,7 @@ function activeTab() {
 // the whole canvas. An editor with unsaved text is the only state in the canvas
 // that cannot be recovered by reloading.
 function confirmDiscard(candidates) {
-    if (!candidates.some((tab) => tab.dirty)) {
+    if (!candidates.some((tab) => tab.dirty || tab.suggestions?.hasEdits())) {
         return true;
     }
     try {
@@ -423,6 +424,7 @@ function closeTab(id) {
         return;
     }
     const [closed] = tabs.splice(index, 1);
+    closed.suggestions?.dispose();
     if (closed.dirty) discardDraft(closed);
     closed.draftWriter?.flush().catch(() => {});
     releaseBoardTab(closed);
@@ -817,6 +819,12 @@ async function sendWorkItemToChat(state, entry) {
 }
 
 function renderWorkItemTab(tab) {
+    if (canSuggestTasks(tab.data.type) && !tab.suggestions) {
+        tab.suggestions = createTaskSuggestionPanel({ request,
+            url: action => `/api/work-items/${tab.data.id}/${action}${connectionQuery(tabEntry(tab), { workItemProject: tab.data.project })}`,
+            onCreated: () => checkWorkItemUpdates(tab),
+        });
+    }
     const generation = tab.viewGeneration = (tab.viewGeneration || 0) + 1;
     const currentView = () => tabs.includes(tab) && generation === tab.viewGeneration;
     tab.view = renderWorkItem(tab.content, tab.data, {
@@ -830,6 +838,8 @@ function renderWorkItemTab(tab) {
         onAddTask: () => ensureWorkspace().openCreate({ connection: tabEntry(tab), parent: tab.data }),
         onSendToChat: () => sendWorkItemToChat(tab, tabEntry(tab)),
         chatStatus: tab.chatStatus,
+        onSuggestTasks: tab.suggestions ? () => tab.suggestions.open() : null,
+        suggestionsHost: tab.suggestions?.host,
         onUploadAttachment: tab.storedDraft ? null : async (file) => {
             if (tab.busy) throw new Error("Wait for the current save to finish before uploading.");
             tab.pendingUploads = (tab.pendingUploads || 0) + 1;
@@ -1756,6 +1766,7 @@ function resetTabs() {
     workspaceController?.destroy();
     workspaceController = null;
     for (const tab of tabs) {
+        tab.suggestions?.dispose();
         tab.draftWriter?.flush().catch(() => {});
         releaseBoardTab(tab);
         if (tab.panel !== homePanel) {

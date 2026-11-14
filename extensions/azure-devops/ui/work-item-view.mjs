@@ -663,6 +663,13 @@ export function renderWorkItem(container, item, options = {}) {
         addTask.addEventListener("click", () => options.onAddTask());
         headerActions.append(addTask);
     }
+    if (options.onSuggestTasks) {
+        const suggest = element("button", "primer-button secondary work-item-suggest-tasks", "Suggest tasks");
+        suggest.type = "button";
+        suggest.title = "Ask Copilot for a draft breakdown of the saved story. Review it before creating tasks.";
+        suggest.addEventListener("click", () => options.onSuggestTasks());
+        headerActions.append(suggest);
+    }
     if (options.editMode) {
         headerActions.append(actions.host);
     } else {
@@ -701,6 +708,7 @@ export function renderWorkItem(container, item, options = {}) {
         overview.append(status);
     }
     view.append(overview);
+    if (options.suggestionsHost) view.append(options.suggestionsHost);
 
     view.append(metadataSection(item, options, fields));
 

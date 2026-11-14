@@ -6,6 +6,7 @@ import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createTaskSuggestionService } from "../task-suggestions.mjs";
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : "playwright-core");
 const root = path.resolve(fileURLToPath(new URL("../", import.meta.url)));
@@ -20,6 +21,20 @@ let preferences = {}, nextId = 200;
 let failNextCreate = false, failNextMove = false;
 let chatGate, failChatSend = false;
 const chatSends = [];
+let suggestionSequence = 0;
+const suggestionScope = id => ({ account: "sample-user", organization: "contoso", project: "Northwind", id });
+const suggestions = createTaskSuggestionService({ instanceId: "smoke", ErrorType: Error, newId: () => `suggestion-${++suggestionSequence}`,
+    loadParent: async scope => ({ detail: items.get(scope.id), raw: { fields: { "System.Title": items.get(scope.id).title } } }),
+    send: async () => {},
+    createTask: async (scope, body) => {
+        const created = item(++nextId, body.title, "Task", "New");
+        created.assignedTo = body.assignedTo === undefined ? items.get(scope.id).assignedTo : body.assignedTo || "Unassigned";
+        items.set(created.id, created);
+        const parent = items.get(scope.id); parent.rev++;
+        parent.relations[0].links.push({ id: created.id, kind: "work-item", kindLabel: "Task", label: `Task ${created.id}`, title: created.title, state: "New", project: created.project });
+        return { workItem: created };
+    },
+});
 function item(id, title, type = "User Story", state = "Active") {
     return { id, rev: 1, title, type, state, project: "Northwind", assignedTo: "Alex Morgan", states: states.map(s => s.name),
         area: "Northwind", iteration: "Northwind\\Sprint 6", tags: [], discussion: [], commentCount: 0, relations: [],
@@ -74,9 +89,23 @@ const server = http.createServer(async (req, res) => {
             target.columnId = body.columnId; target.state = columns.find(c => c.id === body.columnId).name; target.rev++;
             return json({ workItem: target });
         }
-        const match = pathname.match(/^\/api\/work-items\/(\d+)(?:\/(details|draft|comments|attachments|send-to-chat))?$/);
+        const match = pathname.match(/^\/api\/work-items\/(\d+)(?:\/(details|draft|comments|attachments|send-to-chat|task-suggestions|create-suggested-tasks))?$/);
         if (match) {
             const target = items.get(Number(match[1]));
+            if (match[2] === "task-suggestions") {
+                const scope = suggestionScope(target.id);
+                if (req.method === "POST") {
+                    const draft = await suggestions.start(scope);
+                    suggestions.receive({ requestId: draft.requestId, tasks: [
+                        { title: "Add keyboard navigation", description: "Support the account setup flow with a keyboard.", doneWhen: "All controls are reachable without a mouse." },
+                        { title: "Review setup wording", description: "Review labels and validation messages.", doneWhen: "Required fields and errors are clearly explained." },
+                    ], questions: [] }, scope.account);
+                    return json({ draft });
+                }
+                if (req.method === "DELETE") suggestions.dismiss(scope);
+                return json({ draft: suggestions.get(scope) });
+            }
+            if (match[2] === "create-suggested-tasks") return json({ draft: await suggestions.create(suggestionScope(target.id), body) });
             if (match[2] === "send-to-chat") {
                 assert.equal(req.method, "POST");
                 assert.equal(req.headers["x-canvas-nonce"], "sample-nonce");
@@ -240,9 +269,33 @@ try {
         await page.screenshot({ path: path.join(output, `board-${width}.png`), fullPage: true });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No page overflow at ${width}px`);
     }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator('[data-workspace-view="items"]').click();
+    await page.getByRole("button", { name: "Open User Story 142: Improve account setup", exact: true }).click();
+    const suggestionParent = page.locator(".tab-panel:not([hidden])");
+    await suggestionParent.getByRole("button", { name: "Suggest tasks", exact: true }).click();
+    const review = suggestionParent.getByRole("region", { name: "Suggested tasks" });
+    await review.getByRole("textbox", { name: "Title for task 1", exact: true }).waitFor();
+    const sizeBefore = items.size;
+    await review.getByRole("textbox", { name: "Title for task 1", exact: true }).fill("Verify keyboard setup flow");
+    await review.getByRole("checkbox", { name: "Select task 2", exact: true }).uncheck();
+    await suggestionParent.getByRole("button", { name: "Edit this work item", exact: true }).click();
+    assert.equal(await review.getByRole("textbox", { name: "Title for task 1", exact: true }).inputValue(), "Verify keyboard setup flow");
+    await suggestionParent.getByRole("textbox", { name: "Assigned to", exact: true }).fill("unsaved@example.com");
+    await page.screenshot({ path: path.join(output, "suggest-tasks-desktop.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.screenshot({ path: path.join(output, "suggest-tasks-390.png"), fullPage: true });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "No suggestion panel overflow at 390px");
+    assert.equal(items.size, sizeBefore, "Suggestions have not created work items");
+    await review.getByRole("button", { name: "Create selected tasks", exact: true }).click();
+    await review.getByRole("status").filter({ hasText: "Created #202" }).waitFor();
+    assert.equal(items.size, sizeBefore + 1);
+    assert.equal(items.get(202).assignedTo, "Alex Morgan", "New task inherits saved assignment, not unsaved editor text");
+    assert.equal(items.get(142).relations[0].links.at(-1).id, 202);
+    assert.equal(await suggestionParent.getByRole("textbox", { name: "Assigned to", exact: true }).inputValue(), "unsaved@example.com");
     assert.deepEqual(errors, []);
     assert.deepEqual(requests.filter(request => /pull-request|repositories|pipeline|new-session-branch/.test(request)), []);
-    console.log(`PASS: Brave personal defaults, explicit wider search and reset, completed items, linked child creation, failed-create retry, persistent drafts, conflict review, screenshot paste, keyboard/drag board moves, failed-move rollback, assignment inside item editing, Send to chat pending/error/retry/draft preservation, desktop/900px/390px layouts. Screenshots: ${output}`);
+    console.log(`PASS: Brave personal defaults, search, creation/retry, draft recovery/conflicts, uploads, board moves, assignment, Send to chat, task suggestion review/edit/select/create with draft preservation, desktop/900px/390px layouts. Screenshots: ${output}`);
 } catch (error) {
     if (page) { await page.screenshot({ path: path.join(output, "failure.png"), fullPage: true }); console.error(await page.locator("body").innerText()); }
     throw error;

@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { CanvasError } from "@github/copilot-sdk/extension";
 import {
     AGENCY_AUTH_ENABLED,
+    canSuggestTasks,
     DEFAULT_FEATURE_FLAGS,
     encodePathPart,
     hasRenderableContent,
@@ -42,6 +43,7 @@ import {
 import { createWorkspaceService, MAX_UPLOAD_BYTES, readBoundedBody } from "./workspace-server.mjs";
 import { createWorkspaceStore, MAX_DRAFT_BYTES, MAX_PREFERENCES_BYTES } from "./workspace-store.mjs";
 import { buildWorkItemChatPrompt } from "./work-item-chat.mjs";
+import { createTaskSuggestionService } from "./task-suggestions.mjs";
 
 const DEFAULT_API_VERSION = "7.1";
 const HOME_LIST_LIMIT = 10;
@@ -927,6 +929,7 @@ function buildApiUrl(config, path, params = {}, apiVersion = config.apiVersion |
 async function fetchJson(config, path, options = {}) {
     const url = buildApiUrl(config, path, options.params, options.apiVersion);
     const token = await getRequestToken();
+    await validateRequestAccount(config, token);
     const response = await fetch(url, {
         method: options.method || "GET",
         headers: authHeaders(token, options.headers),
@@ -1968,6 +1971,8 @@ async function readWorkItemDetailData(overrides = {}) {
         organization: reference.organization,
         project: reference.project,
     });
+    config.requestAccount = overrides.requestAccount;
+    config.requestAuthGeneration = overrides.requestAuthGeneration;
     const project = await resolveWorkItemProject(config, reference.id);
     const [item, commentResult] = await Promise.all([
         fetchJson(config, `${encodeURIComponent(project)}/_apis/wit/workitems/${reference.id}`, {
@@ -2764,14 +2769,26 @@ function connectionSelector(url) {
     };
 }
 
-async function workspaceAccount(config) {
-    const token = await getRequestToken();
+async function accountForToken(config, token) {
     const claims = parseJwtPayload(token.accessToken);
     if (claims?.tid && claims?.oid) return `entra:${claims.tid}:${claims.oid}`;
-    const data = await fetchJson(config, "_apis/connectionData", { apiVersion: "7.1-preview" });
+    const response = await fetch(buildApiUrl(config, "_apis/connectionData", {}, "7.1-preview"), { headers: authHeaders(token) });
+    const data = await readAzureDevOpsJson(response, token);
     const id = normalizeString(data.authenticatedUser?.id || data.authorizedUser?.id);
     if (!id) throw new CanvasError("azure_devops_identity_required", "Azure DevOps could not identify the signed-in account. Sign in again.");
     return `ado:${parseOrganization(config.organization).org.toLowerCase()}:${id}`;
+}
+
+async function workspaceAccount(config) {
+    return accountForToken(config, await getRequestToken());
+}
+
+async function validateRequestAccount(config, token) {
+    if (!config.requestAccount) return;
+    const account = await accountForToken(config, token);
+    if (account !== config.requestAccount || config.requestAuthGeneration !== authGeneration) {
+        throw new CanvasError("azure_devops_account_changed", "The signed-in account changed. Reopen the story and request suggestions again.");
+    }
 }
 
 async function readWorkspaceJson(req, maximum = 1024 * 1024) {
@@ -2785,7 +2802,7 @@ async function readWorkspaceJson(req, maximum = 1024 * 1024) {
 }
 
 async function handleWorkspaceApi(entry, req, res, url) {
-    const match = /^\/api\/work-items\/(\d+)\/(draft|attachments)$/.exec(url.pathname);
+    const match = /^\/api\/work-items\/(\d+)\/(draft|attachments|task-suggestions|create-suggested-tasks)$/.exec(url.pathname);
     if (!url.pathname.startsWith("/api/workspace/") && !match) return false;
     const connection = await requireConnection(entry.input, connectionSelector(url));
     await getRequestToken();
@@ -2800,7 +2817,20 @@ async function handleWorkspaceApi(entry, req, res, url) {
     const query = Object.fromEntries(url.searchParams);
     const route = `${req.method} ${url.pathname}`;
     let payload;
-    if (route === "GET /api/workspace/metadata") payload = await workspaceService.metadata(config);
+    if (match && ["task-suggestions", "create-suggested-tasks"].includes(match[2])) {
+        const id = Number(match[1]);
+        const requestAuthGeneration = authGeneration;
+        const account = await workspaceAccount(config);
+        const scope = { ...config, id, account, requestAccount: account, requestAuthGeneration };
+        scope.project = await resolveWorkItemProject(scope, id);
+        if (match[2] === "create-suggested-tasks" && req.method === "POST") payload = { draft: await entry.taskSuggestions.create(scope, await readWorkspaceJson(req, 512 * 1024)) };
+        else if (match[2] === "task-suggestions" && req.method === "GET") payload = { draft: entry.taskSuggestions.get(scope) };
+        else if (match[2] === "task-suggestions" && req.method === "POST") payload = { draft: await entry.taskSuggestions.start(scope) };
+        else if (match[2] === "task-suggestions" && req.method === "DELETE") { entry.taskSuggestions.dismiss(scope); payload = { draft: null }; }
+        else { notFound(res); return true; }
+        await validateRequestAccount(scope, await getRequestToken());
+    }
+    else if (route === "GET /api/workspace/metadata") payload = await workspaceService.metadata(config);
     else if (route === "GET /api/workspace/items") payload = await workspaceService.items(config, query);
     else if (route === "POST /api/workspace/items") payload = await workspaceService.createItem(config, await readWorkspaceJson(req));
     else if (route === "GET /api/workspace/boards") payload = await workspaceService.boards(config, query.team);
@@ -3201,6 +3231,22 @@ export async function startServer(instanceId, input, { openBoard, closeBoard, de
         delegateWorkItem,
         featureFlags: { ...DEFAULT_FEATURE_FLAGS },
     };
+    entry.taskSuggestions = createTaskSuggestionService({
+        instanceId, ErrorType: CanvasError, newId: () => base64Url(randomBytes(18)),
+        loadParent: async scope => {
+            const data = await readWorkItemDetailData({ organization: scope.organization, project: scope.project, workItemId: scope.id,
+                requestAccount: scope.requestAccount, requestAuthGeneration: scope.requestAuthGeneration });
+            const detail = mapWorkItemDetail(data.item, data.comments, data.template, data.options);
+            if (!canSuggestTasks(detail.type)) throw new CanvasError("azure_devops_task_parent", "Open a story, issue, requirement, feature or epic to suggest child tasks.");
+            return { detail: { ...detail, webUrl: data.webUrl }, raw: data.item };
+        },
+        send: async (options, scope) => {
+            if (typeof copilotSession?.send !== "function") throw new CanvasError("azure_devops_chat_unavailable", "Open the canvas in a Copilot conversation first.");
+            await validateRequestAccount(scope, await getRequestToken());
+            return copilotSession.send(options);
+        },
+        createTask: (scope, body) => workspaceService.createItem(scope, body),
+    });
     const server = createServer(async (req, res) => {
         const url = new URL(req.url || "/", entry.url || "http://127.0.0.1/");
         if (url.pathname.startsWith("/api/")) {
@@ -3245,6 +3291,13 @@ export function serializeCanvasInput(input) {
 
 export function setCopilotSession(session) {
     copilotSession = session;
+}
+
+export async function receiveTaskSuggestions(entry, input) {
+    const scope = entry?.taskSuggestions.scopeFor(input?.requestId);
+    if (!scope) throw new CanvasError("azure_devops_task_suggestions", "This suggestion request is no longer active. Click Suggest tasks in the story again.");
+    await validateRequestAccount(scope, await getRequestToken());
+    return entry.taskSuggestions.receive(input, scope.account);
 }
 
 export {

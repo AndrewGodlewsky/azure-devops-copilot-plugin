@@ -1699,6 +1699,73 @@ const workspaceToken = (identity) => ({ access_token: [
     "signature",
 ].join("."), expires_in: 3600 });
 
+test("task suggestions round trip through the agent action and create only reviewed child tasks", async () => {
+    const raw = { id: 42, rev: 3, fields: { "System.WorkItemType": "User Story", "System.Title": "Improve search", "System.TeamProject": "Northwind", "System.Description": "<p>Find records</p>", "System.AssignedTo": { displayName: "Alex Morgan", uniqueName: "alex@example.com" } } };
+    const { namespace, canvas, requests } = await connectionCanvas({ input: { organization: "contoso", project: "Northwind" }, browserTokenForTest: workspaceToken("person-a"), routes: {
+        "/_apis/wit/workitems/42": raw,
+        "/comments": { comments: [] },
+        "/_apis/wit/workitemtypes/User%20Story": { name: "User Story", xmlForm: "" },
+        "/_apis/projects/Northwind": { id: "northwind-id", name: "Northwind" },
+        "/_apis/wit/workitemtypes": { value: [{ name: "Task" }] },
+        "/_apis/wit/workitems/$Task": { id: 101, fields: { "System.Title": "Search API" } },
+    } });
+    let sent;
+    namespace.setCopilotSession({ send: async options => { sent = options; return "message"; } });
+    const path = "/api/work-items/42/task-suggestions";
+    try {
+        assert.equal((await fetch(canvas.base + path, { method: "POST" })).status, 400);
+        const start = await authed(canvas, path, { method: "POST" });
+        assert.equal(start.status, 200, JSON.stringify(await start.clone().json()));
+        const { draft } = await start.json();
+        assert.match(sent.prompt, /propose_ado_tasks/);
+        await namespace.receiveTaskSuggestions(canvas.entry, { requestId: draft.requestId, tasks: [{ title: "Search API", description: "Implement lookup", doneWhen: "Records found" }], questions: [] });
+        const ready = (await (await authed(canvas, path)).json()).draft;
+        assert.equal(ready.tasks[0].title, "Search API");
+        assert.equal(requests.filter(request => request.method === "POST").length, 0);
+        const response = await authed(canvas, "/api/work-items/42/create-suggested-tasks", { method: "POST", body: JSON.stringify({ requestId: ready.requestId, version: ready.version, tasks: ready.tasks }) });
+        assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+        assert.equal((await response.json()).draft.tasks[0].createdId, 101);
+        const patch = JSON.parse(requests.find(request => request.method === "POST").body);
+        assert.equal(patch.find(op => op.path === "/fields/System.AssignedTo").value, "alex@example.com");
+        assert.equal(patch.find(op => op.path === "/relations/-").value.rel, "System.LinkTypes.Hierarchy-Reverse");
+        assert.match(patch.find(op => op.path === "/relations/-").value.url, /\/42$/);
+        await authed(canvas, path, { method: "DELETE" });
+        await assert.rejects(namespace.receiveTaskSuggestions(canvas.entry, { requestId: ready.requestId, tasks: [], questions: [] }), /no longer active/);
+    } finally { canvas.close(); }
+});
+
+test("task suggestions stop when the signed-in account changes during generation or creation", async () => {
+    let namespace, switchAccount = false;
+    const fixture = await connectionCanvas({ input: { organization: "contoso", project: "Northwind" }, browserTokenForTest: workspaceToken("person-a"), routes: {
+        "/_apis/wit/workitems/42": { id: 42, rev: 1, fields: { "System.WorkItemType": "User Story", "System.TeamProject": "Northwind", "System.Title": "Search" } },
+        "/comments": { comments: [] },
+        "/_apis/wit/workitemtypes/User%20Story": () => { if (switchAccount) { switchAccount = false; namespace.seedBrowserTokenForTest(workspaceToken("person-b")); } return { name: "User Story", xmlForm: "" }; },
+        "/_apis/projects/Northwind": { id: "northwind-id", name: "Northwind" },
+        "/_apis/wit/workitemtypes": { value: [{ name: "Task" }] },
+        "/_apis/wit/workitems/$Task": { id: 101, fields: { "System.Title": "Lookup" } },
+    } });
+    ({ namespace } = fixture);
+    const { canvas, requests } = fixture; const sent = [];
+    namespace.setCopilotSession({ send: async message => { sent.push(message); } });
+    try {
+        const path = "/api/work-items/42/task-suggestions";
+        const draft = (await (await authed(canvas, path, { method: "POST" })).json()).draft;
+        await namespace.receiveTaskSuggestions(canvas.entry, { requestId: draft.requestId, tasks: [{ title: "Lookup", description: "Find records", doneWhen: "Matches returned" }], questions: [] });
+        const ready = (await (await authed(canvas, path)).json()).draft;
+        switchAccount = true;
+        const created = await authed(canvas, "/api/work-items/42/create-suggested-tasks", { method: "POST", body: JSON.stringify({ requestId: ready.requestId, version: ready.version, tasks: ready.tasks }) });
+        assert.equal(requests.filter(request => request.method === "POST").length, 0, "Never write using a replacement account");
+        assert.equal(created.status, 400);
+        assert.equal((await created.json()).error, "azure_devops_account_changed");
+        await namespace.seedBrowserTokenForTest(workspaceToken("person-a"));
+        await authed(canvas, path, { method: "DELETE" });
+        switchAccount = true;
+        const generated = await authed(canvas, path, { method: "POST" });
+        assert.equal(generated.status, 400);
+        assert.equal(sent.length, 1, "Do not send a previous account's item context after the account changes");
+    } finally { canvas.close(); }
+});
+
 test("workspace state survives changed canvas ports and remains scoped to the authenticated account", async () => {
     const home = mkdtempSync(join(tmpdir(), "boards-http-state-"));
     const input = { organization: "fabrikam", project: "widgets" };
