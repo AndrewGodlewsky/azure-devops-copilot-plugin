@@ -799,6 +799,23 @@ async function signOut() {
     }
 }
 
+async function sendWorkItemToChat(state, entry) {
+    if (state.chatStatus?.pending) return;
+    const update = value => {
+        state.chatStatus = value;
+        state.view?.setChatStatus(value);
+    };
+    update({ pending: true });
+    try {
+        await request(`/api/work-items/${state.data.id}/send-to-chat${connectionQuery(entry, {
+            workItemProject: state.data.project,
+        })}`, { method: "POST" });
+        update({ message: "Sent to chat · saved ADO details." });
+    } catch (error) {
+        update({ error: error.message || "Could not confirm delivery. Check the chat before trying again." });
+    }
+}
+
 function renderWorkItemTab(tab) {
     const generation = tab.viewGeneration = (tab.viewGeneration || 0) + 1;
     const currentView = () => tabs.includes(tab) && generation === tab.viewGeneration;
@@ -811,6 +828,8 @@ function renderWorkItemTab(tab) {
         draft: tab.localDraft,
         onDraftChange: (draft) => { if (currentView()) updateDraft(tab, draft); },
         onAddTask: () => ensureWorkspace().openCreate({ connection: tabEntry(tab), parent: tab.data }),
+        onSendToChat: () => sendWorkItemToChat(tab, tabEntry(tab)),
+        chatStatus: tab.chatStatus,
         onUploadAttachment: tab.storedDraft ? null : async (file) => {
             if (tab.busy) throw new Error("Wait for the current save to finish before uploading.");
             tab.pendingUploads = (tab.pendingUploads || 0) + 1;
@@ -1069,12 +1088,14 @@ function renderBoardWorkItemDrawer() {
         return;
     }
     const scrollTop = workItemDrawerContent.scrollTop;
-    renderWorkItem(workItemDrawerContent, state.data, {
+    state.view = renderWorkItem(workItemDrawerContent, state.data, {
         avatarUrl: profileImageUrl,
         imageUrl: (url) => attachmentImageUrl(url, tabEntry(state.tab)),
         canEdit: true,
         editMode: state.editMode,
         onOpenWorkItem: (item) => openBoardWorkItemDrawer(state.tab, item),
+        onSendToChat: () => sendWorkItemToChat(state, tabEntry(state.tab)),
+        chatStatus: state.chatStatus,
         onDirtyChange: (dirty) => {
             if (boardWorkItemDrawerState !== state) return;
             state.dirty = dirty;

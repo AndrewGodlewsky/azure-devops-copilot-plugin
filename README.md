@@ -15,6 +15,7 @@ This is [Andrew Godlewsky's Azure DevOps Copilot Plugin](https://github.com/Andr
 - Recover local drafts and open views after reopening the canvas. Background refresh preserves edits and offers a comparison when Azure DevOps values have changed.
 - Navigate open stories and their child tasks in an expandable vertical sidebar.
 - See linked child tasks in a work item's **Tasks and child work items** section, and click a task to open its details.
+- **Send to chat** from an open story, task, feature or other work item to share its link and saved context with your current Copilot conversation.
 - Work through an interactive Azure DevOps canvas in the GitHub Copilot App.
 
 ## Installation
@@ -55,6 +56,20 @@ Drafts and preferences are saved on this device under `~/.copilot/azure-devops-c
 
 Reusable templates and Copilot-assisted planning are tracked in issues #7 and #8 and remain deferred.
 
+### Send a work item to Copilot
+
+Open a work item and select **Send to chat** beside **Add task**. The plugin reads
+the latest saved ADO version and sends its link, title, state, assignment,
+description, acceptance criteria, child-item summaries, and up to three recent
+comments to the conversation that opened the canvas. Long content is shortened
+to fit a 16,000-character message; the link provides access to the full item.
+Unsaved edits and attachment contents are excluded, and your drafts stay intact.
+
+Copilot is asked to acknowledge the context and wait for your instructions. You
+can then ask it to plan or implement the story. If Copilot is already working,
+the message queues for its next turn. Sending does not update ADO or open a new
+conversation. If delivery cannot be confirmed, check the chat before retrying.
+
 ## Development checks
 
 From `extensions/azure-devops`, run `npm test` for unit and DOM integration coverage. The repeatable browser smoke test runs the real UI against fictional local API fixtures and saves desktop and narrow screenshots:
@@ -66,7 +81,7 @@ $env:BRAVE_PATH = 'C:\Program Files\BraveSoftware\Brave-Browser\Application\brav
 node scripts/workspace-smoke.mjs
 ```
 
-Set `SMOKE_OUTPUT` to choose a screenshot folder; the default `.workspace-smoke` folder is ignored by Git. This test covers personal defaults, explicit wider search and reset, creation and retry, draft recovery, conflict review, screenshot uploads, board moves and assignment inside item editing. It does not sign in to Azure DevOps or modify live work items.
+Set `SMOKE_OUTPUT` to choose a screenshot folder; the default `.workspace-smoke` folder is ignored by Git. This test covers personal defaults, explicit wider search and reset, creation and retry, draft recovery, conflict review, screenshot uploads, board moves, assignment inside item editing, and Send to chat feedback and draft preservation. It does not sign in to Azure DevOps or modify live work items. HTTP tests verify the chat payload against a stub Copilot session; confirming delivery in the installed Copilot App requires a live host session.
 
 ## Upstream attribution
 

@@ -41,6 +41,7 @@ import {
 } from "./work-item.mjs";
 import { createWorkspaceService, MAX_UPLOAD_BYTES, readBoundedBody } from "./workspace-server.mjs";
 import { createWorkspaceStore, MAX_DRAFT_BYTES, MAX_PREFERENCES_BYTES } from "./workspace-store.mjs";
+import { buildWorkItemChatPrompt } from "./work-item-chat.mjs";
 
 const DEFAULT_API_VERSION = "7.1";
 const HOME_LIST_LIMIT = 10;
@@ -1954,7 +1955,7 @@ async function resolveWorkItemProject(config, id) {
     return resolved;
 }
 
-async function getWorkItemDetails(overrides = {}) {
+async function readWorkItemDetailData(overrides = {}) {
     const reference = resolveWorkItemReference(overrides);
     if (!reference) {
         throw new CanvasError(
@@ -1985,15 +1986,18 @@ async function getWorkItemDetails(overrides = {}) {
         ),
         fetchRelatedWorkItems(config, project, relatedWorkItemIds(item)),
     ]);
-    return mapWorkItemDetail(
+    return {
         item,
-        commentResult.comments || commentResult.value || [],
-        parseWorkItemTemplate(typeDefinition.xmlForm),
-        {
-            typeDefinition,
-            relatedById,
-        },
-    );
+        comments: commentResult.comments || commentResult.value || [],
+        template: parseWorkItemTemplate(typeDefinition.xmlForm),
+        options: { typeDefinition, relatedById },
+        webUrl: `${parseOrganization(config.organization).baseUrl}/${encodePathPart(project)}/_workitems/edit/${reference.id}`,
+    };
+}
+
+async function getWorkItemDetails(overrides = {}) {
+    const data = await readWorkItemDetailData(overrides);
+    return mapWorkItemDetail(data.item, data.comments, data.template, data.options);
 }
 
 async function createWorkItem(overrides = {}) {
@@ -3123,6 +3127,30 @@ async function handleApi(entry, req, res, url) {
                 item: workItem,
                 mode,
             }));
+            return;
+        }
+        if (req.method === "POST" && /^\/api\/work-items\/\d+\/send-to-chat$/.test(url.pathname)) {
+            const session = copilotSession;
+            if (typeof session?.send !== "function") {
+                throw new CanvasError("azure_devops_chat_unavailable", "Open this canvas from a Copilot conversation to send a work item to chat.");
+            }
+            const connection = await requireConnection(entry.input, connectionSelector(url));
+            const id = Number(url.pathname.split("/").at(-2));
+            const data = await readWorkItemDetailData({
+                ...entry.input, id, workItemId: id, workItemUrl: "",
+                ...connectionOverrides(connection),
+                project: normalizeString(url.searchParams.get("workItemProject")) || connection.project,
+            });
+            const detail = mapWorkItemDetail(data.item, data.comments, data.template, data.options);
+            const prompt = buildWorkItemChatPrompt({ ...detail, webUrl: data.webUrl }, data.item);
+            try {
+                await session.send({ prompt, mode: "enqueue" });
+            } catch {
+                // Delivery can succeed before the RPC connection drops. Never retry
+                // automatically, which could enqueue the same message twice.
+                throw new CanvasError("azure_devops_chat_send_failed", "Could not confirm delivery. Check the chat before trying again.");
+            }
+            jsonResponse(res, 200, { ok: true });
             return;
         }
         if (req.method === "GET" && /^\/api\/work-items\/\d+\/details$/.test(url.pathname)) {

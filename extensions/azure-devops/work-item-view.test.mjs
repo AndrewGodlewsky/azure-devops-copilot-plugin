@@ -58,6 +58,17 @@ const descriptionSection = {
     fields: [{ name: "Description", field: "System.Description", isHtml: true, value: "<p>Body</p>" }],
 };
 
+test("Send to chat is available inside stories, tasks and features", needsDom, () => {
+    for (const type of ["User Story", "Task", "Feature"]) {
+        let clicked = 0;
+        const host = render(workItem({ type }), { onSendToChat: () => { clicked++; } });
+        const button = host.querySelector(".work-item-send-chat");
+        assert.equal(button.textContent, "Send to chat");
+        button.click();
+        assert.equal(clicked, 1);
+    }
+});
+
 test("Add task is available before a parent has any children", needsDom, () => {
     let added = 0;
     const host = render(workItem(), { onAddTask: () => { added += 1; } });

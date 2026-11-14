@@ -121,6 +121,11 @@ function makeFetch(state) {
             state.identityQueries = [...(state.identityQueries || []), path];
             return json({ identities: state.identities || [], error: state.identityError || "" });
         }
+        if (/\/api\/work-items\/\d+\/send-to-chat/.test(path)) {
+            state.chatSends = [...(state.chatSends || []), { path, method: options.method }];
+            await state.holdChatSend;
+            return state.chatError ? { ok: false, json: async () => ({ message: state.chatError }) } : json({ ok: true });
+        }
         const wiDelegation = path.match(/\/api\/work-items\/(\d+)\/delegate/);
         if (wiDelegation) {
             if (!state.featureFlags?.delegation) {
@@ -257,6 +262,57 @@ const activeTitle = (w) => {
     return row ? shortTitle(row) : undefined;
 };
 const visiblePanels = (w) => [...w.document.querySelectorAll("#homePanel, #tabPanels > .tab-panel")].filter((p) => !p.hidden);
+
+test("send to chat preserves drafts, scopes the request and prevents pending duplicate sends", describeDom, async (t) => {
+    const gate = deferred();
+    const { window, state } = await boot({ homeWorkItems: [42], workItemsById: { 42: { project: "Southwind" } }, holdChatSend: gate.promise });
+    t.after(() => window.close());
+    assert.equal(window.document.querySelector(".work-item-send-chat"), null);
+    await openFromHome(window, 42);
+    let panel = visiblePanels(window)[0];
+    panel.querySelector('[aria-label="Edit this work item"]').click();
+    await settle();
+    panel = visiblePanels(window)[0];
+    const input = panel.querySelector('[aria-label="Assigned to"]');
+    input.value = "alex@example.com";
+    input.dispatchEvent(new window.Event("input"));
+    const send = panel.querySelector(".work-item-send-chat");
+    assert.ok(send);
+    assert.match(send.title, /saved/i);
+    send.click(); send.click();
+    assert.equal(send.disabled, true);
+    assert.equal(state.chatSends.length, 1);
+    assert.deepEqual(state.chatSends[0], { path: "/api/work-items/42/send-to-chat?organization=example&project=project&workItemProject=Southwind", method: "POST" });
+    gate.resolve(); await settle();
+    assert.equal(send.disabled, false);
+    assert.match(panel.querySelector(".work-item-chat-status").textContent, /sent.*saved/i);
+    assert.equal(panel.querySelector('[aria-label="Assigned to"]'), input);
+    assert.equal(input.value, "alex@example.com");
+    assert.equal(state.workItemUpdates, undefined);
+    state.chatError = "Could not confirm delivery. Check the chat before trying again.";
+    send.click(); await settle();
+    assert.equal(send.disabled, false);
+    assert.match(panel.querySelector('.work-item-chat-status[role="alert"]').textContent, /Check the chat/);
+    assert.equal(input.value, "alex@example.com");
+});
+
+test("send to chat pending and completion survive switching into edit mode", describeDom, async (t) => {
+    const gate = deferred();
+    const { window, state } = await boot({ homeWorkItems: [42], holdChatSend: gate.promise });
+    t.after(() => window.close());
+    await openFromHome(window, 42);
+    const panel = visiblePanels(window)[0];
+    panel.querySelector(".work-item-send-chat").click();
+    panel.querySelector('[aria-label="Edit this work item"]').click();
+    await settle();
+    const send = panel.querySelector(".work-item-send-chat");
+    assert.equal(send.disabled, true);
+    send.click();
+    assert.equal(state.chatSends.length, 1);
+    gate.resolve(); await settle();
+    assert.equal(send.disabled, false);
+    assert.match(panel.querySelector(".work-item-chat-status").textContent, /Sent to chat/);
+});
 
 test("attachment app registration: work-item images use the nonce proxy after sanitization", describeDom, async (t) => {
     const source = "https://dev.azure.com/fabrikam/4e1c4e8f-0c57-4a25-9a4e-2e2c2f4d8a55/_apis/wit/attachments/06f5932c-aa2f-4545-9764-8546bec98914?fileName=image.png";

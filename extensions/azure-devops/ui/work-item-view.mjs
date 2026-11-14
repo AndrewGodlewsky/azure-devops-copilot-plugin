@@ -638,6 +638,25 @@ export function renderWorkItem(container, item, options = {}) {
     ), subtitle);
     header.append(headerCopy);
     const headerActions = element("div", "work-item-header-actions");
+    const chatStatus = element("div", "work-item-chat-status");
+    const sendChat = options.onSendToChat
+        ? element("button", "primer-button secondary work-item-send-chat", "Send to chat") : null;
+    const setChatStatus = ({ pending = false, message = "", error = "" } = {}) => {
+        if (!sendChat) return;
+        sendChat.disabled = pending;
+        sendChat.textContent = pending ? "Sending…" : "Send to chat";
+        chatStatus.textContent = error || message;
+        chatStatus.hidden = !chatStatus.textContent;
+        chatStatus.classList.toggle("error", Boolean(error));
+        chatStatus.setAttribute("role", error ? "alert" : "status");
+    };
+    if (sendChat) {
+        sendChat.type = "button";
+        sendChat.title = "Send the link and saved ADO details to the current chat. Unsaved edits are not included.";
+        sendChat.addEventListener("click", () => options.onSendToChat());
+        setChatStatus(options.chatStatus);
+        headerActions.append(sendChat);
+    }
     if (options.onAddTask) {
         const addTask = element("button", "primer-button secondary work-item-add-task", "Add task");
         addTask.type = "button";
@@ -671,6 +690,7 @@ export function renderWorkItem(container, item, options = {}) {
         header.append(headerActions);
     }
     overview.append(header);
+    if (sendChat) overview.append(chatStatus);
     if (options.delegationStatus || options.delegationError) {
         const status = element(
             "div",
@@ -741,5 +761,5 @@ export function renderWorkItem(container, item, options = {}) {
             if (options.draft) options.onDirtyChange?.(fields.anyDirty());
         });
     }
-    return { getDraft };
+    return { getDraft, setChatStatus };
 }

@@ -1651,6 +1651,48 @@ const authed = (canvas, path, init = {}) => fetch(`${canvas.base}${path}`, {
     headers: { "x-canvas-nonce": canvas.apiNonce, ...(init.headers || {}) },
 });
 
+test("send to chat reads saved ADO context, scopes the item and enqueues in the owning session", async () => {
+    const sent = [];
+    const { namespace, canvas, requests } = await connectionCanvas({
+        input: { organization: "contoso", project: "Northwind", workItemId: 99 },
+        routes: {
+            "/_apis/wit/workitems/42": { id: 42, rev: 7, fields: {
+                "System.WorkItemType": "Feature", "System.Title": "Saved feature", "System.TeamProject": "Southwind",
+                "System.Description": "<p>Saved description</p>", "Microsoft.VSTS.Common.AcceptanceCriteria": "<p>Must be accessible</p>",
+            } },
+            "/comments": { comments: [] },
+            "/_apis/wit/workitemtypes/Feature": { name: "Feature", xmlForm: "" },
+        },
+    });
+    const path = "/api/work-items/42/send-to-chat?organization=contoso&project=Northwind&workItemProject=Southwind";
+    try {
+        namespace.setCopilotSession({ send: async (options) => { sent.push(options); return "message-42"; } });
+        const denied = await fetch(`${canvas.base}${path}`, { method: "POST" });
+        assert.equal(denied.status, 400);
+        assert.equal(sent.length, 0);
+        const response = await authed(canvas, path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: "Untrusted draft" }) });
+        assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+        assert.deepEqual(await response.json(), { ok: true });
+        assert.equal(sent.length, 1);
+        assert.equal(sent[0].mode, "enqueue");
+        for (const text of ["Feature #42", "Saved feature", "Saved description", "Must be accessible", "https://dev.azure.com/contoso/Southwind/_workitems/edit/42"])
+            assert.ok(sent[0].prompt.includes(text), text);
+        assert.doesNotMatch(sent[0].prompt, /Untrusted draft|#99/);
+        assert.ok(requests.some(request => request.pathname === "/contoso/Southwind/_apis/wit/workitems/42"));
+        assert.ok(requests.every(request => request.method === "GET"));
+
+        namespace.setCopilotSession({});
+        const unavailable = await authed(canvas, path, { method: "POST" });
+        assert.equal(unavailable.status, 400);
+        assert.match((await unavailable.json()).message, /Copilot.*conversation/i);
+        namespace.setCopilotSession({ send: async () => { throw new Error("RPC disconnected"); } });
+        const failed = await authed(canvas, path, { method: "POST" });
+        assert.equal(failed.status, 400);
+        assert.match((await failed.json()).message, /could not confirm.*check.*chat/i);
+        assert.equal(sent.length, 1, "no automatic retries after an uncertain send");
+    } finally { canvas.close(); }
+});
+
 const workspaceToken = (identity) => ({ access_token: [
     Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
     Buffer.from(JSON.stringify({ tid: "fictional-tenant", oid: identity, exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url"),

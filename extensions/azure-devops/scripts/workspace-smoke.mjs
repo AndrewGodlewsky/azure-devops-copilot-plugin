@@ -18,6 +18,8 @@ const items = new Map();
 const drafts = new Map();
 let preferences = {}, nextId = 200;
 let failNextCreate = false, failNextMove = false;
+let chatGate, failChatSend = false;
+const chatSends = [];
 function item(id, title, type = "User Story", state = "Active") {
     return { id, rev: 1, title, type, state, project: "Northwind", assignedTo: "Alex Morgan", states: states.map(s => s.name),
         area: "Northwind", iteration: "Northwind\\Sprint 6", tags: [], discussion: [], commentCount: 0, relations: [],
@@ -72,9 +74,17 @@ const server = http.createServer(async (req, res) => {
             target.columnId = body.columnId; target.state = columns.find(c => c.id === body.columnId).name; target.rev++;
             return json({ workItem: target });
         }
-        const match = pathname.match(/^\/api\/work-items\/(\d+)(?:\/(details|draft|comments|attachments))?$/);
+        const match = pathname.match(/^\/api\/work-items\/(\d+)(?:\/(details|draft|comments|attachments|send-to-chat))?$/);
         if (match) {
             const target = items.get(Number(match[1]));
+            if (match[2] === "send-to-chat") {
+                assert.equal(req.method, "POST");
+                assert.equal(req.headers["x-canvas-nonce"], "sample-nonce");
+                assert.equal(url.searchParams.get("workItemProject"), target.project);
+                chatSends.push(target.id);
+                await chatGate;
+                return failChatSend ? json({ message: "Could not confirm delivery. Check the chat before trying again." }, 503) : json({ ok: true });
+            }
             if (match[2] === "draft") { if (req.method === "PUT") drafts.set(target.id, body); if (req.method === "DELETE") drafts.delete(target.id); return json({ draft: drafts.get(target.id) || null }); }
             if (match[2] === "attachments") { target.rev++; return json({ attachment: { fileName: url.searchParams.get("fileName"), url: "https://dev.azure.com/contoso/11111111-1111-4111-8111-111111111111/_apis/wit/attachments/22222222-2222-4222-8222-222222222222" }, rev: target.rev }); }
             if (match[2] === "comments") { target.discussion.push({ id: 1, author: "Alex Morgan", text: body.content, format: "markdown" }); target.commentCount++; target.rev++; }
@@ -131,6 +141,23 @@ try {
     assert.equal(await page.locator(".workspace-table tbody tr").count(), 1);
     await page.getByRole("button", { name: "Clear", exact: true }).click();
     await page.getByRole("button", { name: "Open User Story 142: Improve account setup", exact: true }).click();
+    const story = page.locator(".tab-panel:not([hidden])");
+    await story.getByRole("button", { name: "Send to chat", exact: true }).waitFor();
+    await page.screenshot({ path: path.join(output, "send-chat-desktop.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.screenshot({ path: path.join(output, "send-chat-390.png"), fullPage: true });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "No Send to chat overflow at 390px");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    let finishChat;
+    chatGate = new Promise(resolve => { finishChat = resolve; });
+    await story.getByRole("button", { name: "Send to chat", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.tab-panel:not([hidden]) .work-item-send-chat')?.disabled);
+    await story.getByRole("button", { name: "Edit this work item", exact: true }).click();
+    assert.equal(await story.locator(".work-item-send-chat").isDisabled(), true);
+    finishChat();
+    await story.locator(".work-item-chat-status").filter({ hasText: "Sent to chat" }).waitFor();
+    assert.deepEqual(chatSends, [142]);
+    await story.locator(".editor-cancel").click();
     await page.getByRole("button", { name: "Add task", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByRole("textbox", { name: "Title", exact: true }).fill("Review setup accessibility");
@@ -188,6 +215,14 @@ try {
     const detail = page.locator(".tab-panel:not([hidden])");
     await detail.getByRole("button", { name: "Edit this work item", exact: true }).click();
     await detail.getByRole("textbox", { name: "Assigned to", exact: true }).fill("jamie@example.com");
+    failChatSend = true;
+    await detail.getByRole("button", { name: "Send to chat", exact: true }).click();
+    await detail.locator('.work-item-chat-status[role="alert"]').filter({ hasText: "Check the chat" }).waitFor();
+    assert.equal(await detail.getByRole("textbox", { name: "Assigned to", exact: true }).inputValue(), "jamie@example.com");
+    failChatSend = false;
+    await detail.getByRole("button", { name: "Send to chat", exact: true }).click();
+    await detail.locator(".work-item-chat-status").filter({ hasText: "Sent to chat" }).waitFor();
+    assert.equal(items.get(143).assignedTo, "Alex Morgan", "Sending does not save the draft");
     await page.screenshot({ path: path.join(output, "assignment-desktop.png"), fullPage: true });
     await page.setViewportSize({ width: 390, height: 900 });
     await page.screenshot({ path: path.join(output, "assignment-390.png"), fullPage: true });
@@ -207,7 +242,7 @@ try {
     }
     assert.deepEqual(errors, []);
     assert.deepEqual(requests.filter(request => /pull-request|repositories|pipeline|new-session-branch/.test(request)), []);
-    console.log(`PASS: Brave personal defaults, explicit wider search and reset, completed items, linked child creation, failed-create retry, persistent drafts, conflict review, screenshot paste, keyboard/drag board moves, failed-move rollback, assignment inside item editing, desktop/900px/390px layouts. Screenshots: ${output}`);
+    console.log(`PASS: Brave personal defaults, explicit wider search and reset, completed items, linked child creation, failed-create retry, persistent drafts, conflict review, screenshot paste, keyboard/drag board moves, failed-move rollback, assignment inside item editing, Send to chat pending/error/retry/draft preservation, desktop/900px/390px layouts. Screenshots: ${output}`);
 } catch (error) {
     if (page) { await page.screenshot({ path: path.join(output, "failure.png"), fullPage: true }); console.error(await page.locator("body").innerText()); }
     throw error;
