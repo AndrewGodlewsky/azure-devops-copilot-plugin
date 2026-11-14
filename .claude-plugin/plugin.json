@@ -1,13 +1,14 @@
 {
-  "name": "azure-devops-copilot-plugin",
-  "description": "An Azure DevOps canvas for work items, repositories, and pull requests in GitHub Copilot CLI.",
+  "name": "andrewgodlewsky-azure-devops",
+  "description": "Andrew Godlewsky's fork of the Azure DevOps canvas for work items, repositories, and pull requests in GitHub Copilot.",
   "version": "0.1.71",
   "author": {
-    "name": "Microsoft"
+    "name": "Andrew Godlewsky",
+    "url": "https://github.com/AndrewGodlewsky"
   },
-  "homepage": "https://github.com/microsoft/azure-devops-copilot-plugin",
+  "homepage": "https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin",
   "license": "MIT",
-  "repository": "https://github.com/microsoft/azure-devops-copilot-plugin",
+  "repository": "https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin",
   "keywords": [
     "azure-devops",
     "ado",

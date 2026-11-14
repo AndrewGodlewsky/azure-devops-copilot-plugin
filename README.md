@@ -1,6 +1,6 @@
-# Azure DevOps Copilot Plugin [Preview]
+# Andrew's Azure DevOps Copilot Plugin [Preview]
 
-The Azure DevOps Copilot Plugin brings your Azure DevOps work into the [GitHub Copilot App](https://github.com/apps/desktop) so you can review and act on it without leaving your Copilot session.
+This is Andrew Godlewsky's fork of the [Microsoft Azure DevOps Copilot Plugin](https://github.com/microsoft/azure-devops-copilot-plugin). It brings your Azure DevOps work into the [GitHub Copilot App](https://github.com/apps/desktop) so you can review and act on it without leaving your Copilot session.
 
 > [!WARNING]
 > This is a preview release. It is not supported for production workloads and may change without notice.
@@ -17,7 +17,15 @@ The Azure DevOps Copilot Plugin brings your Azure DevOps work into the [GitHub C
 
 ### Marketplace
 
-Add `https://github.com/microsoft/azure-devops-copilot-plugin` as a Copilot marketplace, then select **Azure DevOps Copilot Plugin** from its catalog.
+Add `https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin` as a Copilot marketplace, then select **andrewgodlewsky-azure-devops** from the **andrewgodlewsky-plugins** catalog.
+
+For the **Install plugin** dialog, enter:
+
+```text
+andrewgodlewsky-azure-devops@andrewgodlewsky-plugins
+```
+
+This fork uses distinct plugin and marketplace names so it can be registered alongside Microsoft's marketplace.
 
 ## Usage
 
