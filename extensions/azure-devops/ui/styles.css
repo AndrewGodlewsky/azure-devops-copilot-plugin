@@ -217,6 +217,7 @@ a { color: var(--text-color-link, #0969da); }
 .work-item .work-item-meta { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; color: var(--text-color-muted, #57606a); font-size: var(--text-body-small, 12px); }
 .work-item-meta-summary, .work-item-meta-people { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .work-item-meta-people { justify-content: flex-end; }
+.work-item-assignee-edit { display: grid; gap: 4px; max-width: 100%; }
 .work-item-meta-badge { display: inline-flex; gap: 5px; align-items: center; min-height: 28px; box-sizing: border-box; border: 1px solid var(--border-color-default, #d0d7de); border-radius: 999px; padding: 0 10px; color: var(--text-color-default, #1f2328); background: var(--background-color-default, #fff); box-shadow: 0 1px 1px rgba(58, 44, 87, .05); }
 .work-item-meta-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; overflow: hidden; border-radius: 50%; color: var(--text-color-on-emphasis, #fff); background: var(--background-color-neutral-emphasis, #6e7781); font-size: 8px; font-weight: var(--font-weight-semibold, 600); line-height: 1; }
 .identity-avatar-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }

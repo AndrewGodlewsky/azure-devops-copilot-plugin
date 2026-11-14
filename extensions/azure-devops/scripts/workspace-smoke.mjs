@@ -28,6 +28,9 @@ function item(id, title, type = "User Story", state = "Active") {
 items.set(142, item(142, "Improve account setup"));
 items.set(143, item(143, "Build setup form", "Task", "New"));
 items.set(150, item(150, "Improve profile editing", "User Story", "Done"));
+items.set(160, { ...item(160, "Review another person's feature", "User Story"), assignedTo: "Jamie Rivera" });
+items.set(161, { ...item(161, "Triage an unassigned task", "Task"), assignedTo: "Unassigned" });
+const myItems = () => [...items.values()].filter(item => item.assignedTo === "Alex Morgan");
 items.get(142).relations = [{ name: "Children", links: [{ id: 143, kind: "work-item", kindLabel: "Task", label: "Task 143", title: "Build setup form", state: "New", project: "Northwind" }] }];
 const theme = '<style>:root{color-scheme:dark;--background-color-default:#0d1117;--background-color-muted:#161b22;--text-color-default:#e6edf3;--text-color-muted:#9198a1;--text-color-link:#58a6ff;--text-color-accent:#58a6ff;--border-color-default:#30363d;--border-color-muted:#30363d;--background-color-neutral-muted:#21262d;--background-color-accent-muted:#1f2d41;--background-color-accent-emphasis:#0969da}</style>';
 const requests = [];
@@ -44,7 +47,7 @@ const server = http.createServer(async (req, res) => {
         if (pathname === "/api/config") return json({ apiNonce: "sample-nonce", config: { auth: { isAuthenticated: true, authType: "microsoft" }, connections: [connection], extensionVersion: "workspace-preview", featureFlags: {} } });
         if (pathname === "/api/workspace/preferences") { if (req.method === "PATCH") preferences = { ...preferences, ...body }; return json({ preferences }); }
         if (pathname === "/api/workspace/metadata") return json({ projects: [{ id: "northwind", name: "Northwind" }], teams: [{ id: "team", name: "Northwind Team" }], types: ["User Story", "Task", "Bug"].map(name => ({ name, states })) });
-        if (pathname === "/api/workspace/dashboard") return json({ current: { workItems: [...items.values()].filter(i => i.state !== "Done"), count: 2 }, blocked: { workItems: [], count: 0 }, unfinished: { workItems: [{ ...items.get(142), incompleteChildCount: 1 }], count: 1 }, completed: { workItems: [items.get(150)], count: 1 } });
+        if (pathname === "/api/workspace/dashboard") return json({ current: { workItems: myItems().filter(i => i.state !== "Done"), count: 2 }, blocked: { workItems: [], count: 0 }, unfinished: { workItems: [{ ...items.get(142), incompleteChildCount: 1 }], count: 1 }, completed: { workItems: [items.get(150)], count: 1 } });
         if (pathname === "/api/workspace/items") {
             if (req.method === "POST") {
                 if (failNextCreate) { failNextCreate = false; return json({ message: "Sample network failure; retry safely." }, 503); }
@@ -55,11 +58,14 @@ const server = http.createServer(async (req, res) => {
                 return json({ workItem: created });
             }
             const query = (url.searchParams.get("query") || "").toLowerCase();
-            const workItems = [...items.values()].filter(i => i.title.toLowerCase().includes(query) || String(i.id) === query);
+            const assignee = url.searchParams.get("assignee") || "mine";
+            const workItems = [...items.values()].filter(i =>
+                (assignee === "all" || (assignee === "mine" ? i.assignedTo === "Alex Morgan" : i.assignedTo === (assignee === "unassigned" ? "Unassigned" : assignee)))
+                && (i.title.toLowerCase().includes(query) || String(i.id) === query));
             return json({ workItems, count: workItems.length, nextCursor: null });
         }
         if (pathname === "/api/workspace/boards") return json({ boards: [{ id: "stories", name: "Stories" }] });
-        if (pathname === "/api/workspace/board") return json({ id: "stories", name: "Stories", columns, workItems: [...items.values()] });
+        if (pathname === "/api/workspace/board") return json({ id: "stories", name: "Stories", columns, workItems: myItems(), scopeNote: "Your assigned work in this team's backlog." });
         if (pathname === "/api/workspace/board/move") {
             if (failNextMove) { failNextMove = false; return json({ message: "Sample revision conflict. Refresh and retry." }, 409); }
             const target = items.get(body.id); assert.equal(body.rev, target.rev);
@@ -102,8 +108,23 @@ try {
     const origin = `http://127.0.0.1:${server.address().port}`;
     await page.goto(origin);
     await page.getByRole("heading", { name: "My current work", exact: false }).waitFor();
+    assert.doesNotMatch(await page.locator(".workspace-dashboard").innerText(), /another person's|unassigned task/);
     await page.screenshot({ path: path.join(output, "home-desktop.png"), fullPage: true });
     await page.locator('[data-workspace-view="items"]').click();
+    await page.locator(".workspace-table tbody tr").first().waitFor();
+    assert.equal(await page.getByRole("combobox", { name: "Assignee", exact: true }).inputValue(), "mine");
+    assert.equal(await page.locator(".workspace-table tbody tr").count(), 3);
+    assert.doesNotMatch(await page.locator(".workspace-table").innerText(), /Jamie Rivera|Unassigned/);
+    await page.getByRole("combobox", { name: "Assignee", exact: true }).selectOption("all");
+    await page.getByRole("searchbox", { name: "Search work items" }).fill("160");
+    await page.getByRole("button", { name: "Apply filters", exact: true }).click();
+    await page.getByRole("button", { name: "Open User Story 160: Review another person's feature", exact: true }).click();
+    await page.locator(".tab-panel:not([hidden]) .work-item-title").filter({ hasText: "Review another person's feature" }).waitFor();
+    await page.locator('[data-workspace-view="items"]').click();
+    await page.getByRole("button", { name: "Clear", exact: true }).click();
+    await page.getByRole("button", { name: "Open User Story 142: Improve account setup", exact: true }).waitFor();
+    assert.equal(await page.getByRole("combobox", { name: "Assignee", exact: true }).inputValue(), "mine");
+    assert.doesNotMatch(await page.locator(".workspace-table").innerText(), /Jamie Rivera|Unassigned/);
     await page.getByRole("searchbox", { name: "Search work items" }).fill("profile");
     await page.getByRole("button", { name: "Apply filters", exact: true }).click();
     await page.getByRole("button", { name: "Open User Story 150: Improve profile editing", exact: true }).waitFor();
@@ -147,6 +168,8 @@ try {
     assert.match(drafts.get(201).comment.content, /!\[screen.png\]/);
     await page.locator('[data-workspace-view="board"]').click();
     await page.locator(".workspace-board-card").first().waitFor();
+    assert.equal(await page.locator('.workspace-board [data-item-id="160"], .workspace-board [data-item-id="161"]').count(), 0);
+    assert.equal(await page.locator(".workspace-card-assignment, .workspace-assignee").count(), 0);
     let card = page.locator('[data-item-id="143"]');
     await card.getByRole("combobox", { name: "Move 143 to" }).selectOption({ label: "Active" });
     await card.getByRole("button", { name: "Move", exact: true }).focus();
@@ -161,10 +184,21 @@ try {
     await card.dragTo(page.locator('[data-column-id="column-2"]'));
     await page.locator('[data-column-id="column-2"] [data-item-id="143"][aria-busy="false"]').waitFor();
     assert.equal(items.get(143).state, "Done");
-    await card.locator("summary").click();
-    await card.getByRole("textbox", { name: "Assign 143 to" }).fill("jamie@example.com");
-    await card.getByRole("button", { name: "Save assignment", exact: true }).click();
-    await card.locator(".workspace-assignee").filter({ hasText: "jamie@example.com" }).waitFor();
+    await card.getByRole("button", { name: "Open Task 143: Build setup form", exact: true }).click();
+    const detail = page.locator(".tab-panel:not([hidden])");
+    await detail.getByRole("button", { name: "Edit this work item", exact: true }).click();
+    await detail.getByRole("textbox", { name: "Assigned to", exact: true }).fill("jamie@example.com");
+    await page.screenshot({ path: path.join(output, "assignment-desktop.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.screenshot({ path: path.join(output, "assignment-390.png"), fullPage: true });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "No assignment edit overflow at 390px");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await detail.locator(".editor-save").click();
+    await detail.locator(".work-item-meta-badge strong").filter({ hasText: "jamie@example.com" }).waitFor();
+    assert.equal(items.get(143).assignedTo, "jamie@example.com");
+    await page.locator('[data-workspace-view="board"]').click();
+    await page.locator(".workspace-board-card").first().waitFor();
+    assert.equal(await page.locator('[data-item-id="143"]').count(), 0, "Reassigned items leave the personal board");
     await page.screenshot({ path: path.join(output, "board-desktop.png"), fullPage: true });
     for (const width of [900, 390]) {
         await page.setViewportSize({ width, height: 900 });
@@ -173,7 +207,7 @@ try {
     }
     assert.deepEqual(errors, []);
     assert.deepEqual(requests.filter(request => /pull-request|repositories|pipeline|new-session-branch/.test(request)), []);
-    console.log(`PASS: Brave search, completed items, linked child creation, failed-create retry, persistent drafts, conflict review, screenshot paste, keyboard/drag board moves, failed-move rollback, assignment, desktop/900px/390px layouts. Screenshots: ${output}`);
+    console.log(`PASS: Brave personal defaults, explicit wider search and reset, completed items, linked child creation, failed-create retry, persistent drafts, conflict review, screenshot paste, keyboard/drag board moves, failed-move rollback, assignment inside item editing, desktop/900px/390px layouts. Screenshots: ${output}`);
 } catch (error) {
     if (page) { await page.screenshot({ path: path.join(output, "failure.png"), fullPage: true }); console.error(await page.locator("body").innerText()); }
     throw error;

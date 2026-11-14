@@ -123,6 +123,7 @@ export function createWorkspaceService({ fetchJson, parseOrganization, validateW
         if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(config.project)) config = await project(config);
         const pageSize = Math.floor(Math.max(1, Math.min(Number(filters.pageSize) || 50, 200)));
         const values = Object.fromEntries(["query", "assignee", "state", "type", "tags"].map((key) => [key, text(filters[key], key)]));
+        values.assignee ||= "mine";
         const fingerprint = digest([config.organization.toLowerCase(), config.project.toLowerCase(), values]);
         let cursor = { after: null, asOf: new Date().toISOString(), filter: fingerprint };
         if (filters.cursor) {
@@ -205,7 +206,7 @@ export function createWorkspaceService({ fetchJson, parseOrganization, validateW
         if (!columnField || !/^[A-Za-z][A-Za-z0-9_.]+$/.test(columnField)
             || (doneField && !/^[A-Za-z][A-Za-z0-9_.]+$/.test(doneField))) throw fail("board_fields_missing", "This board did not expose its column fields.");
         const membership = await fetchJson(config, `${path}/backlogs/${enc(backlog.id)}/workItems`);
-        const ids = [...new Set((membership.workItems || []).map((link) => Number(link.target?.id)).filter(Boolean))];
+        const ids = [...new Set((membership.workItems || []).map((link) => Number(link.target?.id)).filter(id => Number.isSafeInteger(id) && id > 0))];
         return { config, board, backlog, columnField, doneField, ids };
     }
     function card(context, raw) {
@@ -219,14 +220,21 @@ export function createWorkspaceService({ fetchJson, parseOrganization, validateW
     }
     async function board(config, team, id) {
         const context = await boardContext(config, team, id);
-        const raw = await batch(context.config, context.ids, { fields: [...SUMMARY_FIELDS, context.columnField, context.doneField] });
+        const asOf = new Date().toISOString();
+        const mine = new Set();
+        for (let index = 0; index < context.ids.length; index += 200) {
+            const ids = context.ids.slice(index, index + 200);
+            const result = await query(context.config, `[System.AssignedTo] = @Me AND [System.Id] IN (${ids.join(",")})`, ids.length, { asOf });
+            for (const entry of result.workItems || []) mine.add(Number(entry.id));
+        }
+        const raw = await batch(context.config, context.ids.filter(id => mine.has(id)), { fields: [...SUMMARY_FIELDS, context.columnField, context.doneField], asOf });
         const supported = new Set((context.backlog.workItemTypes || []).map(({ name }) => name));
         const workItems = raw.filter((entry) => !supported.size || supported.has(entry.fields?.["System.WorkItemType"]))
             .map((entry) => card(context, entry));
         const sampleLimit = Number(context.backlog.workItemCountLimit) || 1000;
         return { id: context.board.id, name: context.board.name, columns: context.board.columns || [], workItems,
             count: workItems.length, sampleLimit, truncated: context.ids.length >= sampleLimit,
-            scopeNote: "Azure DevOps team backlog membership; completed items follow the team's backlog visibility rules." };
+            scopeNote: "Your assigned work in this team's backlog. Completed items follow the team's backlog visibility rules." };
     }
     async function move(config, team, id, body) {
         const rev = positive(body.rev, "Revision");

@@ -7,7 +7,7 @@ try { ({ JSDOM } = await import("jsdom")); } catch { JSDOM = null; }
 const needsDom = { skip: JSDOM ? false : "jsdom is not installed" };
 const settle = () => new Promise(resolve => setTimeout(resolve, 10));
 const deferred = () => { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const item = (id, extra = {}) => ({ id, rev: 4, type: "Task", title: `Build widget ${id}`, state: "Active", assignedTo: "Unassigned", project: "Widgets", tags: [], ...extra });
+const item = (id, extra = {}) => ({ id, rev: 4, type: "Task", title: `Build widget ${id}`, state: "Active", assignedTo: "Ada Lovelace", project: "Widgets", tags: [], ...extra });
 const metadata = {
     projects: [{ id: "widgets", name: "Widgets" }, { id: "boxes", name: "Boxes" }],
     types: [{ name: "User Story", states: [{ name: "New", category: "Proposed" }, { name: "Closed", category: "Completed" }] }, { name: "Task", states: [{ name: "Active", category: "InProgress", color: "007acc" }, { name: "Done", category: "Completed" }] }],
@@ -51,7 +51,6 @@ function setup(t, options = {}) {
             state.board.workItems[0] = { ...state.board.workItems[0], columnId: body.columnId, columnDone: body.done, rev: body.rev + 1 };
             return { workItem: structuredClone(state.board.workItems[0]) };
         }
-        if (url.pathname === "/api/work-items/11" && method === "PATCH") return { workItem: item(11, { rev: body.rev + 1, assignedTo: body.fields[0].value || "Unassigned" }) };
         if (url.pathname === "/api/workspace/dashboard") return state.dashboard || Object.fromEntries(["current", "blocked", "unfinished", "completed"].map(name => [name, { workItems: [item(11, { incompleteChildCount: 2 })], count: 1 }]));
         throw new Error(`Unexpected request ${method} ${path}`);
     };
@@ -67,21 +66,42 @@ function setup(t, options = {}) {
     return { controller, window: dom.window, document, container, calls, state, opened, created, changes, views, control, click, submit, change };
 }
 
-test("work-item list includes completed and unassigned work and preserves scope when opening", needsDom, async t => {
+test("work-item list defaults to my assignments, includes completed work and preserves scope when opening", needsDom, async t => {
     const ui = setup(t, { connections: [{ organization: "contoso", project: "" }] });
     await ui.controller.show("items");
     const request = ui.calls.find(call => call.path === "/api/workspace/items");
-    assert.equal(request.params.get("assignee"), "all");
+    assert.equal(request.params.get("assignee"), "mine");
+    assert.equal(ui.control("Assignee").value, "mine");
     assert.equal(request.params.has("state"), false);
     assert.equal(request.params.has("project"), false);
     assert.match(ui.container.textContent, /Done/);
-    assert.match(ui.container.textContent, /Unassigned/);
+    assert.equal(ui.container.querySelector(".workspace-table").textContent.includes("Unassigned"), false);
     ui.control("Open Task 12: Build widget 12").click();
     assert.equal(ui.opened[0][0].id, 12);
     assert.equal(ui.opened[0][1].organization, "contoso");
     assert.equal(ui.opened[0][1].project, "");
     assert.equal(ui.opened[0][1].workItemProject, "Widgets");
     assert.deepEqual(ui.views, ["items"]);
+});
+
+test("wider searches are explicit and Clear returns to my work without restoring a broad default", needsDom, async t => {
+    const ui = setup(t, { state: { preferences: { workspace: { view: "items", assignee: "all" } } }, handle(call) {
+        if (call.path === "/api/workspace/items") return { workItems: call.params.get("assignee") === "all"
+            ? [item(13, { assignedTo: "Unassigned" }), item(14, { assignedTo: "Other Person" })] : [item(11)] };
+    } });
+    await ui.controller.show("items");
+    assert.equal(ui.calls.filter(call => call.path.endsWith("/items")).at(-1).params.get("assignee"), "mine");
+    ui.change(ui.control("Assignee"), "all");
+    ui.control("Search work items").value = "widget";
+    ui.submit(ui.control("Filter work items")); await settle();
+    assert.match(ui.container.querySelector(".workspace-table").textContent, /Unassigned/);
+    ui.control("Open Task 13: Build widget 13").click();
+    assert.equal(ui.opened[0][0].id, 13);
+    ui.click("Clear"); await settle();
+    assert.equal(ui.control("Assignee").value, "mine");
+    assert.equal(ui.control("Search work items").value, "");
+    assert.equal(ui.calls.filter(call => call.path.endsWith("/items")).at(-1).params.get("assignee"), "mine");
+    assert.doesNotMatch(ui.container.querySelector(".workspace-table").textContent, /Unassigned|Other Person/);
 });
 
 test("filters encode query, assignment, state, type and tags; opaque pagination can go back", needsDom, async t => {
@@ -246,30 +266,21 @@ test("failed board movement rolls back with a useful error and keyboard focus", 
     assert.equal(ui.document.activeElement.dataset.focusKey, "11:move");
 });
 
-test("drag-and-drop and quick assignment use actual board fields and preserve assignment drafts during refresh", needsDom, async t => {
+test("board cards omit assignment controls and owner text while retaining navigation and drag-and-drop", needsDom, async t => {
     const ui = setup(t);
     await ui.controller.show("board");
     const card = ui.container.querySelector('[data-item-id="11"]');
+    assert.equal(card.querySelector(".workspace-card-assignment"), null);
+    assert.equal(card.querySelector(".workspace-assignee"), null);
+    assert.equal(card.querySelector("input"), null);
+    card.querySelector(".workspace-item-link").click();
+    assert.equal(ui.opened[0][0].id, 11);
     const drag = new ui.window.Event("dragstart", { bubbles: true, cancelable: true });
     Object.defineProperty(drag, "dataTransfer", { value: { setData() {} } });
     card.dispatchEvent(drag);
     ui.container.querySelector('[data-column-id="working"][data-done="false"]').dispatchEvent(new ui.window.Event("drop", { bubbles: true, cancelable: true }));
     await settle();
     assert.equal(ui.calls.find(call => call.path.endsWith("/move")).body.columnId, "working");
-    const details = ui.container.querySelector(".workspace-card-assignment");
-    details.open = true; await settle();
-    const input = ui.control("Assign 11 to");
-    input.value = "ada@example.com";
-    input.dispatchEvent(new ui.window.Event("input", { bubbles: true }));
-    input.focus();
-    await ui.controller.refresh({ background: true });
-    assert.equal(ui.control("Assign 11 to"), input);
-    assert.equal(input.value, "ada@example.com");
-    ui.submit(input.closest("form")); await settle();
-    const call = ui.calls.find(call => call.path === "/api/work-items/11");
-    assert.deepEqual(call.body, { rev: 5, fields: [{ name: "System.AssignedTo", value: "ada@example.com", isHtml: false }] });
-    assert.equal(call.params.get("workItemProject"), "Widgets");
-    assert.match(ui.container.textContent, /ada@example.com/);
 });
 
 test("background board refresh waits for an optimistic mutation instead of overwriting it", needsDom, async t => {
@@ -340,36 +351,28 @@ test("destroy removes its dialog and ignores late responses; missing connection 
     assert.deepEqual(empty.calls.map(call => call.path), ["/api/workspace/preferences"]);
 });
 
-test("changing board scope closes the old assignment editor and ignores an older mutation's draft cleanup", needsDom, async t => {
+test("changing board scope ignores an older mutation and preserves the new board's move choice", needsDom, async t => {
     const mutation = deferred();
     const ui = setup(t, { handle(call) {
         if (call.path === "/api/workspace/board/move") return mutation.promise;
     } });
     await ui.controller.show("board");
-    const assignment = ui.container.querySelector(".workspace-card-assignment");
-    assignment.open = true;
-    await settle();
     ui.change(ui.control("Board"), "features");
     await settle();
     assert.equal(ui.calls.filter(call => call.path === "/api/workspace/board").at(-1).params.get("boardId"), "features");
-    assert.equal(ui.container.querySelector(".workspace-card-assignment").open, false);
 
     ui.change(ui.control("Move 11 to"), JSON.stringify(["working", false]));
     ui.submit(ui.container.querySelector(".workspace-card-move"));
     ui.change(ui.control("Board"), "stories");
     await settle();
-    const nextAssignment = ui.container.querySelector(".workspace-card-assignment");
-    nextAssignment.open = true;
-    await settle();
-    const person = ui.control("Assign 11 to");
-    person.value = "morgan@example.com";
-    person.dispatchEvent(new ui.window.Event("input", { bubbles: true }));
+    const move = ui.control("Move 11 to");
+    ui.change(move, JSON.stringify(["closed", false]));
+    move.focus();
     mutation.resolve({ workItem: item(11, { rev: 5, columnId: "working", columnDone: false }) });
     await settle();
     await ui.controller.refresh({ background: true });
-    assert.equal(ui.control("Assign 11 to"), person);
-    assert.equal(person.value, "morgan@example.com");
-    assert.equal(nextAssignment.open, true);
+    assert.equal(ui.control("Move 11 to"), move);
+    assert.equal(move.value, JSON.stringify(["closed", false]));
     assert.equal(ui.container.querySelector(".workspace-board-card").closest(".workspace-board-column").dataset.columnId, "ready");
 });
 

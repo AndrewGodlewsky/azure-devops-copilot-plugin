@@ -8,9 +8,9 @@ This is [Andrew Godlewsky's Azure DevOps Copilot Plugin](https://github.com/Andr
 ## Features
 
 - Customize **Home** with your current work, blocked items, parents with unfinished tasks, and recently completed work.
-- Search **Work items** by title or ID, filter by person, state, type and tags, and page through all results, including completed and unassigned work.
+- Start **Work items** with work assigned to you, search by title or ID, and filter by state, type and tags. Choose **Anyone**, **Unassigned**, or **Specific person** when you want a wider search.
 - Create stories, issues, bugs and tasks using the project's actual work item types. **Add task** links a child and inherits its parent's assignment, area and iteration.
-- Use **Board** to select a project, team and board, move cards by dragging or keyboard controls, and change assignments.
+- Use **Board** to see your assigned work in a selected project, team and board, and move cards by dragging or keyboard controls. Open an item and choose **Edit** to change its assignment.
 - Edit work items, post comments, attach files, and paste screenshots into descriptions or discussions.
 - Recover local drafts and open views after reopening the canvas. Background refresh preserves edits and offers a comparison when Azure DevOps values have changed.
 - Navigate open stories and their child tasks in an expandable vertical sidebar.
@@ -47,7 +47,9 @@ The sidebar keeps each opened item's details and edits available as you switch. 
 
 This fork focuses on Azure Boards. Azure Repos pull requests, reviews, branch actions, linked commits, and pipeline summaries are not included.
 
-Choose a project for Home, Board and creation. An organization connection can search across projects in Work items. Board columns and states come from Azure DevOps, including split columns; board visibility follows that team's backlog settings. Home sections sample up to 100 items each, show sampling notices, and use the last 14 days for recently completed work. Use Work items for complete paged searches.
+Home and Board show work assigned to the signed-in Azure DevOps user. Work items also starts with **Assigned to me**, and **Clear** returns to that default. To find other work, choose **Anyone** in the Assignee filter and search by title or ID. Linked items and items you explicitly open remain accessible regardless of assignment. Assignment changes are available inside an item's **Edit** form; clear **Assigned to** to unassign it, then **Save**.
+
+Choose a project for Home, Board and creation. An organization connection can search across projects in Work items. Board columns and states come from Azure DevOps, including split columns; your cards are filtered from that team's backlog, so its type and visibility settings still apply. Home sections sample up to 100 items each, show sampling notices, and use the last 14 days for recently completed work. Use Work items for complete paged searches.
 
 Drafts and preferences are saved on this device under `~/.copilot/azure-devops-canvas/workspace`, separated by signed-in account. A saved draft is offered for restoration before editing or commenting; it does not update Azure DevOps until you save or post. Files attach immediately and have a 60 MiB per-file limit. While the canvas is visible, it checks for updates every 30 seconds and when you return to it.
 
@@ -64,7 +66,7 @@ $env:BRAVE_PATH = 'C:\Program Files\BraveSoftware\Brave-Browser\Application\brav
 node scripts/workspace-smoke.mjs
 ```
 
-Set `SMOKE_OUTPUT` to choose a screenshot folder; the default `.workspace-smoke` folder is ignored by Git. This test covers creation and retry, search, draft recovery, conflict review, screenshot uploads, board moves and assignment. It does not sign in to Azure DevOps or modify live work items.
+Set `SMOKE_OUTPUT` to choose a screenshot folder; the default `.workspace-smoke` folder is ignored by Git. This test covers personal defaults, explicit wider search and reset, creation and retry, draft recovery, conflict review, screenshot uploads, board moves and assignment inside item editing. It does not sign in to Azure DevOps or modify live work items.
 
 ## Upstream attribution
 

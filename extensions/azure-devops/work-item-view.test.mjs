@@ -67,6 +67,34 @@ test("Add task is available before a parent has any children", needsDom, () => {
     assert.equal(added, 1);
 });
 
+test("assignment is edited inside the item with the existing save and draft flow", needsDom, async () => {
+    const saved = [];
+    const host = document.createElement("div");
+    const handle = renderWorkItem(host, workItem(), { editMode: true, onSave: fields => saved.push(fields) });
+    const input = host.querySelector('[aria-label="Assigned to"]');
+    assert.ok(input);
+    assert.equal(input.value, "Someone");
+    assert.deepEqual(handle.getDraft().fields, []);
+    input.value = "ada@example.com";
+    input.dispatchEvent(new window.Event("input"));
+    assert.deepEqual(handle.getDraft().fields, [{ name: "System.AssignedTo", value: "ada@example.com", isHtml: false }]);
+    host.querySelector(".editor-save").click(); await Promise.resolve(); await Promise.resolve();
+    assert.deepEqual(saved[0], [{ name: "System.AssignedTo", value: "ada@example.com", isHtml: false }]);
+    const restored = render(workItem(), { editMode: true, draft: { fields: handle.getDraft().fields } });
+    assert.equal(restored.querySelector('[aria-label="Assigned to"]').value, "ada@example.com");
+    input.value = "";
+    input.dispatchEvent(new window.Event("input"));
+    assert.deepEqual(handle.getDraft().fields, [{ name: "System.AssignedTo", value: "", isHtml: false }]);
+});
+
+test("assignment stays read-only outside edit mode and unassigned items start with an empty editor", needsDom, () => {
+    const host = render(workItem());
+    assert.equal(host.querySelector('[aria-label="Assigned to"]'), null);
+    assert.equal(host.querySelector(".work-item-meta-badge strong").textContent, "Someone");
+    const edit = render(workItem({ assignedTo: "Unassigned" }), { editMode: true });
+    assert.equal(edit.querySelector('[aria-label="Assigned to"]').value, "");
+});
+
 test("restored field and comment drafts remain dirty and every edit updates the snapshot", needsDom, async () => {
     const host = document.createElement("div");
     const changes = [];
@@ -525,8 +553,9 @@ test("view mode offers one edit control for the whole item", needsDom, () => {
 
 test("edit mode turns the supported fields into controls at once", needsDom, () => {
     const host = render(workItem({ templateSections: [descriptionSection] }), { editMode: true });
-    // Title, state, and the description.
-    assert.equal(host.querySelectorAll(".editor").length, 3);
+    // Title, assignment, state, and the description.
+    assert.equal(host.querySelectorAll(".editor").length, 4);
+    assert.ok(host.querySelector('[aria-label="Assigned to"]'), "assignment");
     assert.ok(host.querySelector(".editor-plain"), "title");
     assert.ok(host.querySelector(".work-item-details .editor-choice"), "state");
     // One save and one cancel for the whole view, not per field.

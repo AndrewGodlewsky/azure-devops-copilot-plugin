@@ -21,7 +21,7 @@ export function createWorkspaceView(container, { request, connections = [], onOp
     let board = null;
     let dashboard = null;
     let dashboardSections = Object.keys(SECTIONS);
-    let filters = { query: "", assignee: "all", state: "", type: "", tags: "" };
+    let filters = { query: "", assignee: "mine", state: "", type: "", tags: "" };
     let cursors = [""];
     let page = 0;
     let result = null;
@@ -32,8 +32,6 @@ export function createWorkspaceView(container, { request, connections = [], onOp
     let draggedId = null;
     let queuedBoardRefresh = false;
     const pending = new Set();
-    const assignmentDrafts = new Map();
-    const assignmentOpen = new Set();
     const moveChoices = new Map();
 
     function element(tag, className, text) {
@@ -126,8 +124,6 @@ export function createWorkspaceView(container, { request, connections = [], onOp
     }
     function resetBoardDrafts() {
         draggedId = null;
-        assignmentDrafts.clear();
-        assignmentOpen.clear();
         moveChoices.clear();
     }
     function ensurePreferences() {
@@ -248,7 +244,7 @@ export function createWorkspaceView(container, { request, connections = [], onOp
     }
     async function refresh({ background = false } = {}) {
         if (destroyed) return;
-        if (modal || (view === "board" && assignmentOpen.size)) return;
+        if (modal) return;
         if (view === "board" && [...pending].some(key => key.startsWith(`${keyFor()}:${team}:${boardId}:`))) { queuedBoardRefresh = true; return; }
         if (background && scopeBar.contains(doc.activeElement)) return;
         if (background && content.contains(doc.activeElement) && !doc.activeElement.closest(".workspace-filters")) return;
@@ -300,8 +296,6 @@ export function createWorkspaceView(container, { request, connections = [], onOp
                 if (!current(token)) return;
                 board = data;
                 if (!background) {
-                    assignmentDrafts.clear();
-                    assignmentOpen.clear();
                     moveChoices.clear();
                 }
                 renderBoard();
@@ -343,7 +337,7 @@ export function createWorkspaceView(container, { request, connections = [], onOp
         const search = input("Search work items", filters.query, "search");
         search.placeholder = "Search title or ID";
         const assignee = select("Assignee", [
-            { value: "all", label: "Anyone" }, { value: "mine", label: "Assigned to me" }, { value: "unassigned", label: "Unassigned" }, { value: "identity", label: "Specific person" },
+            { value: "mine", label: "Assigned to me" }, { value: "all", label: "Anyone" }, { value: "unassigned", label: "Unassigned" }, { value: "identity", label: "Specific person" },
         ], ["all", "mine", "unassigned"].includes(filters.assignee) ? filters.assignee : "identity");
         const person = input("Assignee email or identity", assignee.value === "identity" ? filters.assignee : "");
         person.placeholder = "name@example.com";
@@ -358,7 +352,7 @@ export function createWorkspaceView(container, { request, connections = [], onOp
         tags.placeholder = "Tags, separated by semicolons";
         const apply = button("Apply filters");
         apply.type = "submit";
-        const reset = button("Clear", () => { filters = { query: "", assignee: "all", state: "", type: "", tags: "" }; cursors = [""]; page = 0; content.replaceChildren(); void refresh(); });
+        const reset = button("Clear", () => { filters = { query: "", assignee: "mine", state: "", type: "", tags: "" }; cursors = [""]; page = 0; content.replaceChildren(); void refresh(); });
         const personField = field("Person", person);
         personField.classList.add("workspace-person-filter");
         form.append(field("Search", search), field("Assignee", assignee), personField, field("Type", type), field("State", state), field("Tags", tags), apply, reset);
@@ -392,7 +386,9 @@ export function createWorkspaceView(container, { request, connections = [], onOp
         summary.append(pager);
         content.append(summary);
         if (!items.length) {
-            content.append(element("p", "workspace-empty", "No work items match these filters. Clear the filters or create a work item."));
+            content.append(element("p", "workspace-empty", filters.assignee === "mine"
+                ? "No assigned work matches these filters. Choose Anyone to search other items, or create a work item."
+                : "No work items match these filters. Change the filters or create a work item."));
             return;
         }
         const tableWrap = element("div", "workspace-table-wrap");
@@ -541,7 +537,7 @@ export function createWorkspaceView(container, { request, connections = [], onOp
         card.addEventListener("dragend", () => { draggedId = null; for (const node of content.querySelectorAll(".is-drag-over")) node.classList.remove("is-drag-over"); });
         const link = itemButton(item, scope());
         link.dataset.focusKey = `${item.id}:open`;
-        card.append(element("span", "workspace-item-id", `${item.type || "Work item"} #${item.id}`), link, stateBadge(item), element("p", "workspace-assignee", identityText(item.assignedTo)));
+        card.append(element("span", "workspace-item-id", `${item.type || "Work item"} #${item.id}`), link, stateBadge(item));
         const moveForm = element("form", "workspace-card-move");
         const selectedLane = boardLanes.find(lane => lane.column.id === item.columnId && (!lane.column.isSplit || lane.done === Boolean(item.columnDone)));
         const move = select(`Move ${item.id} to`, boardLanes.map(lane => ({ value: laneValue(lane), label: lane.label })), moveChoices.get(item.id) || (selectedLane && laneValue(selectedLane)));
@@ -551,26 +547,11 @@ export function createWorkspaceView(container, { request, connections = [], onOp
         const moveButton = button("Move"); moveButton.type = "submit"; moveButton.disabled = move.disabled; moveButton.dataset.focusKey = `${item.id}:move`;
         moveForm.append(field("Move to", move), moveButton);
         moveForm.addEventListener("submit", event => { event.preventDefault(); const lane = boardLanes.find(lane => laneValue(lane) === move.value); if (lane) void mutateCard(item, { lane }); });
-        const assignment = element("details", "workspace-card-assignment");
-        assignment.open = assignmentOpen.has(item.id);
-        assignment.addEventListener("toggle", () => { if (assignment.open) assignmentOpen.add(item.id); else assignmentOpen.delete(item.id); });
-        const summary = element("summary", "", "Assign"); summary.dataset.focusKey = `${item.id}:assign-toggle`; assignment.append(summary);
-        const assignForm = element("form");
-        const person = input(`Assign ${item.id} to`, assignmentDrafts.get(item.id) || "");
-        person.placeholder = "Email or identity";
-        person.disabled = busy || !canMutate;
-        person.dataset.focusKey = `${item.id}:person`;
-        person.addEventListener("input", () => assignmentDrafts.set(item.id, person.value));
-        const assign = button("Save assignment"); assign.type = "submit"; assign.disabled = person.disabled; assign.dataset.focusKey = `${item.id}:assign`;
-        const unassign = button("Unassign", () => void mutateCard(item, { assignedTo: "" })); unassign.disabled = person.disabled;
-        assignForm.append(person, assign, unassign);
-        assignForm.addEventListener("submit", event => { event.preventDefault(); if (!person.value.trim()) { person.focus(); return; } void mutateCard(item, { assignedTo: person.value.trim() }); });
-        assignment.append(assignForm);
-        card.append(moveForm, assignment);
+        card.append(moveForm);
         if (!canMutate) card.append(element("p", "workspace-section-error", "Refresh the board before changing this item."));
         return card;
     }
-    async function mutateCard(item, { lane, assignedTo }) {
+    async function mutateCard(item, { lane }) {
         const selected = scope();
         const selectedTeam = team;
         const selectedBoard = boardId;
@@ -578,33 +559,29 @@ export function createWorkspaceView(container, { request, connections = [], onOp
         const sameBoard = () => !destroyed && board === data && view === "board" && keyFor() === keyFor(selected) && team === selectedTeam && boardId === selectedBoard;
         const mutationKey = `${keyFor(selected)}:${selectedTeam}:${selectedBoard}:${item.id}`;
         if (destroyed || pending.has(mutationKey)) return;
-        if (lane && item.columnId === lane.column.id && Boolean(item.columnDone) === lane.done) return;
+        if (item.columnId === lane.column.id && Boolean(item.columnDone) === lane.done) return;
         const index = data.workItems.indexOf(item);
         if (index < 0) return;
         const originalFocus = content.contains(doc.activeElement) ? doc.activeElement.dataset.focusKey : null;
         pending.add(mutationKey);
-        const optimistic = lane ? { ...item, columnId: lane.column.id, columnDone: lane.done } : { ...item, assignedTo: assignedTo || "Unassigned" };
+        const optimistic = { ...item, columnId: lane.column.id, columnDone: lane.done };
         data.workItems[index] = optimistic;
         moveChoices.delete(item.id);
         renderBoard();
         const pendingFocus = doc.activeElement;
         try {
-            const response = await request(lane
-                ? url("/api/workspace/board/move", { team: selectedTeam, boardId: selectedBoard }, selected)
-                : url(`/api/work-items/${encodeURIComponent(item.id)}`, {}, { ...selected, workItemProject: item.project || selected.workItemProject }),
-            json("PATCH", lane ? { id: item.id, rev: item.rev, columnId: lane.column.id, done: lane.done } : { rev: item.rev, fields: [{ name: "System.AssignedTo", value: assignedTo, isHtml: false }] }));
+            const response = await request(url("/api/workspace/board/move", { team: selectedTeam, boardId: selectedBoard }, selected),
+                json("PATCH", { id: item.id, rev: item.rev, columnId: lane.column.id, done: lane.done }));
             data.workItems[index] = { ...optimistic, ...response.workItem };
             if (!destroyed) {
                 if (sameBoard()) {
-                    assignmentDrafts.delete(item.id);
-                    assignmentOpen.delete(item.id);
-                    announce(`${item.type || "Work item"} ${item.id} ${lane ? `moved to ${lane.label}` : "assignment updated"}.`);
+                    announce(`${item.type || "Work item"} ${item.id} moved to ${lane.label}.`);
                 }
                 onChange?.();
             }
         } catch (error) {
             data.workItems[index] = item;
-            if (sameBoard()) announce(`${lane ? "Move" : "Assignment"} was not saved. ${errorText(error)}`, true);
+            if (sameBoard()) announce(`Move was not saved. ${errorText(error)}`, true);
         } finally {
             pending.delete(mutationKey);
             if (sameBoard()) {

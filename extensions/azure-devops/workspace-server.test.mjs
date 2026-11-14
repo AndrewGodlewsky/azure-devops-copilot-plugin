@@ -44,7 +44,8 @@ test("workspace item pagination includes completed work and reaches older ids us
     assert.deepEqual(second.workItems.map(({ id }) => id), [1]);
     assert.equal(second.nextCursor, null);
     const queries = requests.filter(({ json }) => json?.query).map(({ json }) => json.query);
-    assert.doesNotMatch(queries[0], /AssignedTo|NOT IN|System.State/);
+    assert.match(queries[0], /\[System.AssignedTo\] = @Me/);
+    assert.doesNotMatch(queries[0], /NOT IN|System.State/);
     assert.match(queries[1], /\[System.Id\] < 11999/);
     assert.equal(queries[0].split(" ASOF ")[1], queries[1].split(" ASOF ")[1]);
     assert.equal(requests.find(({ params }) => params?.ids).params.asOf,
@@ -53,7 +54,20 @@ test("workspace item pagination includes completed work and reaches older ids us
     await assert.rejects(service.items({ ...config, project: "other" }, { cursor: first.nextCursor }), { code: "azure_devops_invalid_cursor" });
 });
 
-test("all workspace filter literals are escaped and empty assignee remains all work", async () => {
+test("workspace defaults to my assignments and only explicit filters broaden search", async () => {
+    const { service, requests } = harness(({ path }) => path.endsWith("/wiql") ? { workItems: [] } : undefined);
+    for (const filters of [{}, { assignee: "" }, { assignee: " " }, { query: "42" }, { assignee: "mine" }]) {
+        await service.items(config, filters);
+        assert.match(requests.at(-1).json.query, /\[System.AssignedTo\] = @Me/);
+    }
+    await service.items(config, { query: "42", assignee: "all" });
+    assert.doesNotMatch(requests.at(-1).json.query, /AssignedTo/);
+    assert.match(requests.at(-1).json.query, /\[System.Id\] = 42/);
+    await service.items(config, { assignee: "other@example.com" });
+    assert.match(requests.at(-1).json.query, /\[System.AssignedTo\] = 'other@example.com'/);
+});
+
+test("all workspace filter literals are escaped", async () => {
     const { service, requests } = harness(({ path }) => path.endsWith("/wiql") ? { workItems: [] } : undefined);
     await service.items(config, { query: "it's useful", assignee: "unassigned", state: "Won't do", type: "Custom's Type", tags: "blocked; team's" });
     const wiql = requests[0].json.query;
@@ -131,6 +145,7 @@ function boardHarness(change) {
         if (path.endsWith("/boards/board-id")) return boardData;
         if (path.endsWith("/backlogs")) return { value: [{ id: "Microsoft.TaskCategory", name: "Tasks", workItemCountLimit: 1000, workItemTypes: [{ name: "Task" }] }] };
         if (path.endsWith("/backlogs/Microsoft.TaskCategory/workItems")) return { workItems: [{ target: { id: 42 } }] };
+        if (path.endsWith("/wiql")) return { workItems: [{ id: 42 }] };
         if (path.endsWith("/workitems")) return { value: [raw(42, { "WEF_123_Kanban.Column": "In progress", "WEF_123_Kanban.Column.Done": true })] };
         if (path.endsWith("/42")) return method === "PATCH"
             ? raw(42, Object.fromEntries(request.json.filter(({ op }) => op === "add").map(({ path, value }) => [path.slice(8), value])))
@@ -147,6 +162,74 @@ test("native board reads team backlog membership and actual split-column fields"
     assert.equal(result.truncated, false);
     assert.ok(requests.some(({ path }) => path === "widgets/Delivery/_apis/work/backlogs/Microsoft.TaskCategory/workItems"));
     assert.match(requests.find(({ params }) => params?.ids).params.fields, /WEF_123_Kanban.Column.Done/);
+    assert.match(requests.find(({ json }) => json?.query).json.query, /\[System.AssignedTo\] = @Me/);
+});
+
+test("board only loads my items from the selected backlog, excluding other owners and unassigned work", async () => {
+    const records = [raw(42, { "System.AssignedTo": { uniqueName: "me@example.com" } }),
+        raw(43, { "System.AssignedTo": { uniqueName: "other@example.com" } }), raw(44),
+        raw(45, { "System.WorkItemType": "Bug", "System.AssignedTo": { uniqueName: "me@example.com" } })];
+    const { service, requests } = boardHarness(({ path, params, json }) => {
+        if (path.endsWith("/backlogs/Microsoft.TaskCategory/workItems")) return { workItems: records.map(({ id }) => ({ target: { id } })) };
+        if (path.endsWith("/wiql")) {
+            assert.match(json.query, /\[System.TeamProject\] = 'widgets'/);
+            assert.match(json.query, /\[System.AssignedTo\] = @Me/);
+            assert.match(json.query, /\[System.Id\] IN \(42,43,44,45\)/);
+            return { workItems: [{ id: 42 }, { id: 45 }] };
+        }
+        if (path.endsWith("/workitems")) return { value: records.filter(record => params.ids.split(",").includes(String(record.id))) };
+    });
+    const result = await service.board(config, "Delivery", "board-id");
+    assert.deepEqual(result.workItems.map(item => item.id), [42]);
+    assert.equal(result.count, 1);
+    assert.equal(requests.find(({ params }) => params?.ids).params.ids, "42,45");
+});
+
+test("personal board filtering covers large backlogs and skips empty ones", async () => {
+    let ids = Array.from({ length: 205 }, (_, index) => index + 1);
+    const { service, requests } = boardHarness(({ path, json, params }) => {
+        if (path.endsWith("/backlogs/Microsoft.TaskCategory/workItems")) return { workItems: ids.map(id => ({ target: { id } })) };
+        if (path.endsWith("/wiql")) {
+            const chunk = json.query.match(/\[System.Id\] IN \(([^)]+)\)/)[1].split(",").map(Number);
+            assert.ok(chunk.length <= 200);
+            return { workItems: chunk.includes(205) ? [{ id: 205 }] : [] };
+        }
+        if (path.endsWith("/workitems")) return { value: params.ids.split(",").map(Number).map(id => raw(id)) };
+    });
+    assert.deepEqual((await service.board(config, "Delivery", "board-id")).workItems.map(item => item.id), [205]);
+    assert.equal(requests.filter(({ json }) => json?.query).length, 2);
+    ids = [];
+    requests.length = 0;
+    assert.equal((await service.board(config, "Delivery", "board-id")).count, 0);
+    assert.equal(requests.some(({ json, params }) => json?.query || params?.ids), false);
+});
+
+test("board reports a personal-filter failure without falling back to everyone's cards", async () => {
+    const { service, requests } = boardHarness(({ path }) => {
+        if (path.endsWith("/wiql")) throw new Error("Assignment lookup unavailable");
+    });
+    await assert.rejects(service.board(config, "Delivery", "board-id"), /Assignment lookup unavailable/);
+    assert.equal(requests.some(({ params }) => params?.ids), false);
+});
+
+test("board assignment queries and card details share one snapshot across all chunks", async () => {
+    let snapshot;
+    const { service } = boardHarness(({ path, json, params }) => {
+        if (path.endsWith("/backlogs/Microsoft.TaskCategory/workItems")) return { workItems: Array.from({ length: 201 }, (_, index) => ({ target: { id: index + 1 } })) };
+        if (path.endsWith("/wiql")) {
+            const asOf = json.query.match(/ ASOF '([^']+)'$/)?.[1];
+            assert.ok(asOf, "Ownership queries must use a snapshot");
+            snapshot ||= asOf;
+            assert.equal(asOf, snapshot);
+            return { workItems: [{ id: 42 }] };
+        }
+        if (path.endsWith("/workitems")) {
+            assert.equal(params.asOf, snapshot, "Fetch the same revision whose assignment was matched");
+            return { value: [raw(42, { "System.AssignedTo": params.asOf ? "Current User" : "Other Person" })] };
+        }
+    });
+    const result = await service.board(config, "Delivery", "board-id");
+    assert.equal(result.workItems[0].assignedTo, "Current User");
 });
 
 test("native board moves test rev and patch board-specific column, done and mapped state", async () => {

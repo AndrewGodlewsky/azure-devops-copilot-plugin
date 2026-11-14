@@ -226,7 +226,8 @@ function commentAvatar(comment, avatarUrl) {
     return identityAvatar(comment.author, comment.authorImageUrl, avatarUrl);
 }
 
-function metadataSection(item, avatarUrl) {
+function metadataSection(item, options, fields) {
+    const { avatarUrl } = options;
     const meta = element("div", "work-item-meta");
     const summary = element("div", "work-item-meta-summary");
     const assignee = element("span", "work-item-meta-badge");
@@ -235,8 +236,23 @@ function metadataSection(item, avatarUrl) {
         identityAvatar(item.assignedTo, item.assignedToImageUrl, avatarUrl, "work-item-meta-avatar"),
         element("strong", "", item.assignedTo),
     );
+    let assignment = assignee;
+    if (options.editMode) {
+        const control = fields.add("System.AssignedTo", createPlainField({
+            label: "Assigned to",
+            value: item.assignedTo === "Unassigned" ? "" : item.assignedTo || "",
+            draftValue: fields.draftValue("System.AssignedTo"),
+            onDirtyChange: fields.onDirtyChange,
+            onChange: fields.onChange,
+            onSubmit: options.onSubmit,
+            onCancel: options.onCancelEdit,
+        }));
+        assignment = element("div", "work-item-assignee-edit");
+        assignment.append(element("span", "section-field-name", "Assigned to"), control.host,
+            element("span", "status", "Email or identity; leave blank to unassign."));
+    }
     summary.append(
-        assignee,
+        assignment,
         element(
             "span",
             "work-item-meta-badge",
@@ -666,7 +682,7 @@ export function renderWorkItem(container, item, options = {}) {
     }
     view.append(overview);
 
-    view.append(metadataSection(item, options.avatarUrl));
+    view.append(metadataSection(item, options, fields));
 
     const details = summaryDetails(item);
     if (details.length) {
