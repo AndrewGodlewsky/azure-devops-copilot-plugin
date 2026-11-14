@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, request } from "node:http";
 import { readFile } from "node:fs/promises";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
@@ -41,6 +41,8 @@ async function loadCanvasServer({ execFileImpl, existsSyncImpl, readdirSyncImpl,
                 mkdirSync,
                 writeFileSync,
                 rmSync,
+                renameSync,
+                chmodSync,
             },
             "node:os": { homedir: homedirImpl },
             "node:path": { dirname, extname, isAbsolute, join, relative, resolve },
@@ -64,11 +66,12 @@ async function loadCanvasServer({ execFileImpl, existsSyncImpl, readdirSyncImpl,
     const cache = new Map();
     const initializeImportMeta = (meta, module) => { meta.url = module.identifier; };
     const loadRelative = async (href) => {
-        if (cache.has(href)) return cache.get(href);
-        const mod = new SourceTextModule(await readFile(new URL(href), "utf8"), { context, identifier: href, initializeImportMeta });
-        cache.set(href, mod);
-        await mod.link(linker);
-        return mod;
+        if (!cache.has(href)) {
+            cache.set(href, readFile(new URL(href), "utf8").then((source) =>
+                new SourceTextModule(source, { context, identifier: href, initializeImportMeta })));
+        }
+        // Let the root link operation traverse the shared dependency graph once.
+        return cache.get(href);
     };
     async function linker(specifier, referencingModule) {
         const stub = synthetic(specifier);
@@ -1646,6 +1649,200 @@ async function connectionCanvas({
 const authed = (canvas, path, init = {}) => fetch(`${canvas.base}${path}`, {
     ...init,
     headers: { "x-canvas-nonce": canvas.apiNonce, ...(init.headers || {}) },
+});
+
+const workspaceToken = (identity) => ({ access_token: [
+    Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
+    Buffer.from(JSON.stringify({ tid: "fictional-tenant", oid: identity, exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url"),
+    "signature",
+].join("."), expires_in: 3600 });
+
+test("workspace state survives changed canvas ports and remains scoped to the authenticated account", async () => {
+    const home = mkdtempSync(join(tmpdir(), "boards-http-state-"));
+    const input = { organization: "fabrikam", project: "widgets" };
+    const first = await connectionCanvas({ home, input, browserTokenForTest: workspaceToken("person-one") });
+    const draft = { rev: 3, fields: [{ name: "System.Title", value: "Unsaved" }], baseValues: { "System.Title": "Original" }, comment: "Draft comment" };
+    let second;
+    let other;
+    try {
+        const saved = await authed(first.canvas, "/api/work-items/42/draft", {
+            method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft),
+        });
+        assert.equal(saved.status, 200, await saved.clone().text());
+        await Promise.all([
+            authed(first.canvas, "/api/workspace/preferences", { method: "PATCH", body: JSON.stringify({ openItems: [{ id: 42 }], activeItem: 42 }) }),
+            authed(first.canvas, "/api/workspace/preferences", { method: "PATCH", body: JSON.stringify({ dashboardSections: ["current"], workspace: { view: "board" } }) }),
+        ]);
+        second = await connectionCanvas({ home, input, browserTokenForTest: workspaceToken("person-one") });
+        assert.notEqual(first.canvas.base, second.canvas.base);
+        const restored = await authed(second.canvas, "/api/work-items/42/draft").then((res) => res.json());
+        assert.equal(restored.draft.rev, 3);
+        assert.equal(restored.draft.fields[0].value, "Unsaved");
+        assert.equal(restored.draft.comment, "Draft comment");
+        const preferences = await authed(second.canvas, "/api/workspace/preferences").then((res) => res.json());
+        assert.equal(preferences.preferences.activeItem, 42);
+        assert.deepEqual(preferences.preferences.dashboardSections, ["current"]);
+        assert.equal(preferences.preferences.workspace.view, "board");
+        other = await connectionCanvas({ home, input, browserTokenForTest: workspaceToken("person-two") });
+        assert.deepEqual(await authed(other.canvas, "/api/work-items/42/draft").then((res) => res.json()), { draft: null });
+        assert.deepEqual(await authed(other.canvas, "/api/workspace/preferences").then((res) => res.json()), { preferences: {} });
+        const deleted = await authed(second.canvas, "/api/work-items/42/draft", { method: "DELETE" });
+        assert.equal(deleted.status, 200);
+        assert.equal((await authed(first.canvas, "/api/work-items/42/draft").then((res) => res.json())).draft, null);
+    } finally {
+        first.canvas.close(); second?.canvas.close(); other?.canvas.close();
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("workspace routes enforce nonce, sign-in, connection selectors and selected project boundaries", async () => {
+    const input = { organization: "fabrikam", project: "widgets" };
+    const signedIn = await connectionCanvas({ input, browserTokenForTest: workspaceToken("person") });
+    const signedOut = await connectionCanvas({ input, browserTokenForTest: null });
+    try {
+        const missingNonce = await fetch(`${signedIn.canvas.base}/api/workspace/items`);
+        assert.equal(missingNonce.status, 400);
+        assert.equal((await missingNonce.json()).error, "azure_devops_invalid_nonce");
+        const foreign = await authed(signedIn.canvas, "/api/workspace/items?organization=attacker&project=widgets");
+        assert.equal(foreign.status, 400);
+        assert.equal((await foreign.json()).error, "azure_devops_unknown_connection");
+        const project = await authed(signedIn.canvas, "/api/workspace/items?workItemProject=other");
+        assert.equal(project.status, 400);
+        assert.equal((await project.json()).error, "azure_devops_unknown_project");
+        const unauthenticated = await authed(signedOut.canvas, "/api/workspace/preferences");
+        assert.equal(unauthenticated.status, 400);
+        assert.equal((await unauthenticated.json()).error, "azure_devops_oauth_login_required");
+        assert.deepEqual(signedIn.requests, []);
+        assert.deepEqual(signedOut.requests, []);
+    } finally { signedIn.canvas.close(); signedOut.canvas.close(); }
+});
+
+test("workspace GUID connections authorize their project name and share one canonical draft scope", async () => {
+    const projectId = "4e1c4e8f-0c57-4a25-9a4e-2e2c2f4d8a55";
+    const home = mkdtempSync(join(tmpdir(), "boards-http-guid-project-"));
+    const routes = {
+        [`/_apis/projects/${projectId}`]: { id: projectId, name: "widgets" },
+        "/_apis/projects/widgets": { id: projectId, name: "widgets" },
+        "/_apis/wit/wiql": { workItems: [] },
+    };
+    const first = await connectionCanvas({ home, input: { organization: "fabrikam", project: projectId },
+        routes, browserTokenForTest: workspaceToken("person") });
+    let named;
+    try {
+        const draft = { rev: 3, fields: [{ name: "System.Title", value: "Unsaved" }], baseValues: {}, comment: "" };
+        const saved = await authed(first.canvas, "/api/work-items/42/draft?workItemProject=widgets", {
+            method: "PUT", body: JSON.stringify(draft),
+        });
+        assert.equal(saved.status, 200, await saved.clone().text());
+        const restored = await authed(first.canvas, "/api/work-items/42/draft").then((res) => res.json());
+        assert.equal(restored.draft.fields[0].value, "Unsaved");
+        const scopedItems = await authed(first.canvas, "/api/workspace/items?workItemProject=widgets");
+        assert.equal(scopedItems.status, 200, await scopedItems.clone().text());
+        assert.match(first.requests.find(({ body }) => typeof body === "string" && body.includes("SELECT")).body,
+            /\[System.TeamProject\] = 'widgets'/);
+        named = await connectionCanvas({ home, input: { organization: "fabrikam", project: "widgets" },
+            routes, browserTokenForTest: workspaceToken("person") });
+        const namedDraft = await authed(named.canvas, `/api/work-items/42/draft?workItemProject=${projectId}`).then((res) => res.json());
+        assert.equal(namedDraft.draft.fields[0].value, "Unsaved");
+        for (const path of ["/api/workspace/items", "/api/work-items/42/draft"]) {
+            const denied = await authed(first.canvas, `${path}?workItemProject=other`);
+            assert.equal(denied.status, 400);
+            assert.equal((await denied.json()).error, "azure_devops_unknown_project");
+        }
+        assert.equal(first.requests.some(({ pathname }) => pathname.includes("other")), false);
+    } finally {
+        first.canvas.close(); named?.canvas.close();
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("native workspace board routes work while hosted Boards preview is disabled", async () => {
+    const columnField = "WEF_Example_Kanban.Column";
+    const doneField = "WEF_Example_Kanban.Column.Done";
+    const card = { id: 42, rev: 2, fields: { "System.TeamProject": "widgets", "System.WorkItemType": "Task", "System.State": "Active",
+        [columnField]: "Doing", [doneField]: true } };
+    const { canvas, requests } = await connectionCanvas({
+        input: { organization: "fabrikam", project: "widgets" },
+        routes: {
+            "/_apis/projects/widgets": { id: "project-id", name: "widgets" },
+            "/_apis/work/boards": { value: [{ id: "board-id", name: "Tasks" }] },
+            "/_apis/work/boards/board-id": { id: "board-id", name: "Tasks", fields: { columnField: { referenceName: columnField }, doneField: { referenceName: doneField } },
+                columns: [{ id: "doing", name: "Doing", isSplit: true, stateMappings: { Task: "Active" } }] },
+            "/_apis/work/backlogs": { value: [{ id: "Microsoft.TaskCategory", name: "Tasks", workItemTypes: [{ name: "Task" }] }] },
+            "/_apis/work/backlogs/Microsoft.TaskCategory/workItems": { workItems: [{ target: { id: 42 } }] },
+            "/_apis/wit/workitems": { value: [card] },
+            "/_apis/wit/workitems/42": card,
+        },
+    });
+    try {
+        assert.equal(canvas.entry.featureFlags.boards, false);
+        const listed = await authed(canvas, "/api/workspace/boards?team=Delivery");
+        assert.equal(listed.status, 200);
+        assert.equal((await listed.json()).boards[0].id, "board-id");
+        const board = await authed(canvas, "/api/workspace/board?team=Delivery&boardId=board-id");
+        assert.equal(board.status, 200, await board.clone().text());
+        assert.equal((await board.json()).workItems[0].columnDone, true);
+        const moved = await authed(canvas, "/api/workspace/board/move?team=Delivery&boardId=board-id", {
+            method: "PATCH", body: JSON.stringify({ id: 42, rev: 2, columnId: "doing", done: true }),
+        });
+        assert.equal(moved.status, 200, await moved.clone().text());
+        const write = requests.find(({ method }) => method === "PATCH");
+        assert.equal(write.pathname, "/fabrikam/widgets/_apis/wit/workitems/42");
+        assert.deepEqual(JSON.parse(write.body)[0], { op: "test", path: "/rev", value: 2 });
+    } finally { canvas.close(); }
+});
+
+test("raw attachment HTTP upload forwards bytes and adds a guarded relation", async () => {
+    const projectId = "4e1c4e8f-0c57-4a25-9a4e-2e2c2f4d8a55";
+    const attachmentId = "06f5932c-aa2f-4545-9764-8546bec98914";
+    const { canvas, requests } = await connectionCanvas({
+        input: { organization: "fabrikam", project: "widgets" },
+        routes: {
+            "/_apis/projects/widgets": { id: projectId, name: "widgets" },
+            "/_apis/wit/workitems/42": (_url, options) => ({ id: 42, rev: options.method === "PATCH" ? 4 : 3, fields: { "System.TeamProject": "widgets" } }),
+            "/_apis/wit/attachments": { id: attachmentId },
+        },
+    });
+    try {
+        const bytes = new Uint8Array([0, 255, 128, 13, 10]);
+        const response = await authed(canvas, "/api/work-items/42/attachments?fileName=screenshot.png", {
+            method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: bytes,
+        });
+        assert.equal(response.status, 200, await response.clone().text());
+        const result = await response.json();
+        assert.equal(result.rev, 4);
+        assert.equal(result.attachment.fileName, "screenshot.png");
+        assert.match(result.attachment.url, new RegExp(`/${projectId}/_apis/wit/attachments/${attachmentId}`));
+        const uploaded = requests.find(({ pathname }) => pathname.endsWith("/attachments"));
+        assert.deepEqual([...uploaded.body], [...bytes]);
+        const write = requests.find(({ method }) => method === "PATCH");
+        assert.deepEqual(JSON.parse(write.body)[0], { op: "test", path: "/rev", value: 3 });
+        const wrongType = await authed(canvas, "/api/work-items/42/attachments?fileName=file.txt", {
+            method: "POST", headers: { "Content-Type": "text/plain" }, body: "text",
+        });
+        assert.equal(wrongType.status, 400);
+        assert.equal((await wrongType.json()).error, "azure_devops_invalid_upload_type");
+    } finally { canvas.close(); }
+});
+
+test("oversized raw HTTP upload is rejected before upstream work and returns an actionable error", async () => {
+    const { canvas, requests } = await connectionCanvas({ input: { organization: "fabrikam", project: "widgets" } });
+    try {
+        const result = await new Promise((resolve, reject) => {
+            const req = request(`${canvas.base}/api/work-items/42/attachments?fileName=large.bin`, {
+                method: "POST", headers: { "X-Canvas-Nonce": canvas.apiNonce, "Content-Type": "application/octet-stream", "Content-Length": 60 * 1024 * 1024 + 1 },
+            }, (response) => {
+                const chunks = [];
+                response.on("data", (chunk) => chunks.push(chunk));
+                response.on("end", () => resolve({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks)) }));
+            });
+            req.on("error", reject);
+            req.end();
+        });
+        assert.equal(result.status, 400);
+        assert.equal(result.body.error, "azure_devops_attachment_too_large");
+        assert.deepEqual(requests, []);
+    } finally { canvas.close(); }
 });
 
 test("a canvas without saved selections reports no connections", async () => {

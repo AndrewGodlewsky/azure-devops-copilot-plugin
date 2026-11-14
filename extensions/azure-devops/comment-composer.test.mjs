@@ -43,6 +43,73 @@ function setCaret(node, offset) {
     selection.addRange(range);
 }
 
+test("pasted discussion images preview through the proxy and retain the original attachment reference", needsDom, async () => {
+    const url = "https://dev.azure.com/example/project/_apis/wit/attachments/abc";
+    let draft;
+    const composer = createCommentComposer({ id: "upload-comment", value: "Before after", onSubmit() {}, onChange: value => { draft = value; }, onUploadAttachment: async () => ({ attachment: { url, fileName: "shot.png" } }), imageUrl: () => "/api/attachment?nonce=test" });
+    document.body.append(composer.host);
+    const body = composer.host.querySelector(".comment-composer-body");
+    setCaret(body, 7);
+    const paste = new window.Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [new window.File(["image"], "shot.png", { type: "image/png" })], getData: () => "" } });
+    body.dispatchEvent(paste);
+    await settle();
+    assert.ok(body.querySelector("img"));
+    assert.equal(body.querySelector("img").getAttribute("src"), "/api/attachment?nonce=test");
+    assert.match(composer.getValue(), /^Before !\[shot\.png\]/);
+    assert.ok(composer.getValue().includes(url));
+    assert.equal(composer.getValue().includes("nonce=test"), false);
+    assert.equal(draft.content, composer.getValue());
+    composer.host.remove();
+});
+
+test("restored screenshot drafts retain their preview and original Markdown reference", needsDom, () => {
+    const content = "Before ![screen.png](<https://dev.azure.com/example/project/_apis/wit/attachments/abc>) after";
+    const composer = createCommentComposer({ id: "restore-image", value: content, imageUrl: () => "/api/attachment?nonce=next", onSubmit() {} });
+    assert.ok(composer.host.querySelector(".comment-composer-body img"));
+    assert.equal(composer.getValue(), content);
+    assert.equal(composer.host.querySelector("img").getAttribute("src"), "/api/attachment?nonce=next");
+});
+
+test("comment draft snapshots preserve the unfinished next line", needsDom, () => {
+    let changed;
+    const composer = createCommentComposer({ id: "partial-line", value: "First line\n", onSubmit() {}, onChange: draft => { changed = draft; } });
+    assert.equal(composer.getDraft().content, "First line\n");
+    const body = composer.host.querySelector(".comment-composer-body");
+    body.textContent = "First line\n\n";
+    body.dispatchEvent(new window.Event("input"));
+    assert.equal(changed.content, "First line\n\n");
+    assert.equal(composer.getValue(), "First line");
+});
+
+test("posting waits for screenshot uploads while discussion edits remain available", needsDom, async () => {
+    let finish;
+    let submitted;
+    const url = "https://dev.azure.com/example/project/_apis/wit/attachments/abc";
+    const composer = createCommentComposer({
+        id: "pending-upload", value: "Existing text", onSubmit: value => { submitted = value; },
+        onUploadAttachment: () => new Promise(resolve => { finish = resolve; }),
+    });
+    document.body.append(composer.host);
+    const body = composer.host.querySelector(".comment-composer-body");
+    setCaretAtEnd(body);
+    const paste = new window.Event("paste", { cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [new window.File(["image"], "shot.png", { type: "image/png" })] } });
+    body.dispatchEvent(paste);
+    await Promise.resolve();
+    composer.host.querySelector(".comment-submit").click();
+    await settle();
+    assert.equal(submitted, undefined);
+    assert.equal(body.getAttribute("contenteditable"), "true");
+    assert.match(composer.host.querySelector(".comment-composer-error").textContent, /Wait for the attachments/);
+    finish({ attachment: { url, fileName: "shot.png" } });
+    await settle();
+    composer.host.querySelector(".comment-submit").click();
+    await settle();
+    assert.ok(submitted.includes(url));
+    composer.host.remove();
+});
+
 test("comment serialization preserves text and emits stable mention tokens", needsDom, () => {
     const body = document.createElement("div");
     body.append(document.createTextNode("Hello "));

@@ -85,7 +85,7 @@ export function renderNavigation(container, options) {
         const shortTitle = tab ? tabTitle(tab) : link.label || `${link.kindLabel || "Work item"} ${entry.id}`;
         const title = tab?.data?.title || link?.title || shortTitle;
         const state = tab?.data?.state || link?.state || "";
-        const active = tab?.id === activeTabId;
+        const active = tab?.id === activeTabId && (entry.view !== "home" || !options.workspace || options.workspace.view === "home");
         const li = element("li", "navigation-item");
         const row = element("div", `view-tab${active ? " active" : ""}`);
         if (tab) row.dataset.tabId = tab.id;
@@ -167,6 +167,20 @@ export function renderNavigation(container, options) {
             if (li) list.append(li);
         }
         group.append(list);
+        if (!name && options.workspace) {
+            for (const [view, label] of [["items", "Work items"], ["board", "Board"]]) {
+                const button = element("button", "workspace-nav-button", label);
+                button.type = "button";
+                button.dataset.workspaceView = view;
+                if (options.workspace.view === view) button.setAttribute("aria-current", "page");
+                button.addEventListener("click", () => options.workspace.onShow(view));
+                group.append(button);
+            }
+            const create = element("button", "workspace-create-button", "+ New work item");
+            create.type = "button";
+            create.addEventListener("click", options.workspace.onCreate);
+            group.append(create);
+        }
         container.append(group);
     }
     container.hidden = tabs.length === 0;

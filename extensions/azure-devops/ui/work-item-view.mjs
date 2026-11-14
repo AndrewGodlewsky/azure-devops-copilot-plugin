@@ -10,6 +10,7 @@ import { createCommentComposer } from "./comment-composer.mjs";
 import { canEditStoredHtml } from "./editable-html.mjs";
 import { richTextElement } from "./rich-text.mjs";
 import { createActionMenu } from "./action-menu.mjs";
+import { createAttachmentUpload } from "./attachment-upload.mjs";
 
 let workItemRenderSequence = 0;
 
@@ -260,7 +261,7 @@ function metadataSection(item, avatarUrl) {
     return meta;
 }
 
-function discussionSection(item, options) {
+function discussionSection(item, options, onComposer) {
     const discussion = element("section", "discussion work-item-discussion");
     const header = element("div", "discussion-header");
     header.append(element("h2", "discussion-title", "Discussion"));
@@ -271,7 +272,7 @@ function discussionSection(item, options) {
     discussion.append(header);
 
     if (options.onAddComment) {
-        discussion.append(createCommentComposer({
+        const composer = createCommentComposer({
             id: `work-item-${item.id}-new-comment`,
             label: "Add to the work item discussion",
             submitLabel: "Comment",
@@ -281,7 +282,11 @@ function discussionSection(item, options) {
             value: options.commentDraft?.content || "",
             mentions: options.commentDraft?.mentions || [],
             onChange: options.onCommentDraftChange,
-        }).host);
+            onUploadAttachment: options.onUploadAttachment,
+            imageUrl: options.imageUrl,
+        });
+        onComposer?.(composer);
+        discussion.append(composer.host);
     }
 
     if (!(item.discussion || []).length) {
@@ -358,8 +363,9 @@ function readOnlyNotice(item, reason) {
 // Collects the field controls a detail view is currently showing, so the form can
 // read them all at save time. A control only contributes when the user actually
 // changed it, which keeps an untouched field out of the request.
-function createFieldSet(onDirtyChange) {
+function createFieldSet(onDirtyChange, onChange, draftFields = []) {
     const controls = new Map();
+    const drafts = new Map(draftFields.map(field => [field.name, field.value]));
     let primary = null;
     return {
         // A control marked primary is the one edit mode focuses, whatever order
@@ -374,7 +380,7 @@ function createFieldSet(onDirtyChange) {
             return control;
         },
         first: () => (primary && controls.get(primary)) || controls.values().next().value || null,
-        anyDirty: () => [...controls.values()].some((control) => control.isDirty()),
+        anyDirty: () => [...controls.values()].some((control) => control.hasDraftChange?.() ?? control.isDirty()),
         firstError: () => {
             for (const control of controls.values()) {
                 const error = control.validate?.() || "";
@@ -387,7 +393,13 @@ function createFieldSet(onDirtyChange) {
         changed: () => [...controls.entries()]
             .filter(([, control]) => control.isDirty())
             .map(([name, control]) => ({ name, value: control.getValue(), isHtml: Boolean(control.isHtml) })),
+        snapshot: () => [...controls.entries()]
+            .filter(([, control]) => control.hasDraftChange?.() ?? control.isDirty())
+            .map(([name, control]) => ({ name, value: control.getDraftValue?.() ?? control.getValue(), isHtml: Boolean(control.isHtml) })),
+        draftValue: name => drafts.get(name),
+        hasUploads: () => [...controls.values()].some(control => control.isUploading?.()),
         onDirtyChange,
+        onChange,
     };
 }
 
@@ -398,8 +410,10 @@ function renderHeading(item, options, fields) {
     const control = fields.add("System.Title", createPlainField({
         label: "Title",
         value: item.title,
+        draftValue: fields.draftValue("System.Title"),
         required: true,
         onDirtyChange: fields.onDirtyChange,
+        onChange: fields.onChange,
         onSubmit: options.onSubmit,
         onCancel: options.onCancelEdit,
     }), { isPrimary: true });
@@ -415,8 +429,10 @@ function renderState(item, options, fields) {
     return fields.add("System.State", createChoiceField({
         label: "State",
         value: item.state,
+        draftValue: fields.draftValue("System.State"),
         options: item.states,
         onDirtyChange: fields.onDirtyChange,
+        onChange: fields.onChange,
     })).host;
 }
 
@@ -444,7 +460,11 @@ function renderTemplateField(item, field, options, fields, { hideLabel = false }
             const control = fields.add(field.field, createHtmlField({
                 label: field.name,
                 value: field.value,
+                draftValue: fields.draftValue(field.field),
                 onDirtyChange: fields.onDirtyChange,
+                onChange: fields.onChange,
+                imageUrl: options.imageUrl,
+                onUploadAttachment: options.onUploadAttachment,
                 onSubmit: options.onSubmit,
                 onCancel: options.onCancelEdit,
             }));
@@ -462,8 +482,11 @@ function renderTemplateField(item, field, options, fields, { hideLabel = false }
         const control = fields.add(field.field, createMarkdownField({
             label: field.name,
             value: field.value,
+            draftValue: fields.draftValue(field.field),
             imageUrl: options.imageUrl,
             onDirtyChange: fields.onDirtyChange,
+            onChange: fields.onChange,
+            onUploadAttachment: options.onUploadAttachment,
             onSubmit: options.onSubmit,
             onCancel: options.onCancelEdit,
         }));
@@ -475,7 +498,9 @@ function renderTemplateField(item, field, options, fields, { hideLabel = false }
         const control = fields.add(field.field, createPlainField({
             label: field.name,
             value: field.value,
+            draftValue: fields.draftValue(field.field),
             onDirtyChange: fields.onDirtyChange,
+            onChange: fields.onChange,
             onSubmit: options.onSubmit,
             onCancel: options.onCancelEdit,
         }));
@@ -528,22 +553,41 @@ function templateSection(item, section, options, fields, { sidebar = false } = {
  * turns it on once, changes whatever they like, and saves everything in a single
  * request. That matches how Azure DevOps accepts updates, so one save is one
  * atomic patch with one concurrency check.
+ * Draft callbacks contain changed fields and the complete current comment.
+ * Attachment callbacks attach immediately; their inserted references remain
+ * unsaved until the field or comment is submitted.
  *
  * @param {Element} container
  * @param {object} item mapped work item detail
  * @param {{ avatarUrl?: (url: string) => string, canEdit?: boolean, editMode?: boolean, onOpenWorkItem?: (item: { id: number, project?: string }) => void, onEdit?: () => void, onCancelEdit?: () => void, onSave?: (fields: object[]) => Promise<void>, onDirtyChange?: (dirty: boolean) => void, onSubmit?: () => void, onDelegateLocal?: () => void, delegationPending?: boolean, delegationStatus?: string, delegationError?: string }} options
+ * @returns {{ getDraft: () => { fields: object[], comment: { content: string, mentions: object[] } } }}
  */
 export function renderWorkItem(container, item, options = {}) {
     container.replaceChildren();
     const renderId = ++workItemRenderSequence;
     const view = element("article", "work-item");
-    const fields = createFieldSet(() => options.onDirtyChange?.(fields.anyDirty()));
+    let composer;
+    let comment = options.draft?.comment ?? options.commentDraft ?? { content: "", mentions: [] };
+    if (typeof comment === "string") comment = { content: comment, mentions: [] };
+    const fields = createFieldSet(
+        () => options.onDirtyChange?.(fields.anyDirty()),
+        options.onDraftChange ? () => options.onDraftChange(getDraft()) : undefined,
+        options.draft?.fields || [],
+    );
+    const getDraft = () => ({ fields: fields.snapshot(), comment: composer?.getDraft() || comment });
+    const onCommentDraftChange = options.onCommentDraftChange;
+    options = { ...options, commentDraft: comment, onCommentDraftChange: onCommentDraftChange || options.onDraftChange ? draft => {
+        comment = draft;
+        onCommentDraftChange?.(draft);
+        options.onDraftChange?.(getDraft());
+    } : undefined };
 
     let actions = null;
     if (options.editMode) {
         actions = createEditActions({
             onCancel: () => options.onCancelEdit?.(),
             onSave: async () => {
+                if (fields.hasUploads()) throw new Error("Wait for the attachments to finish uploading before saving.");
                 const error = fields.firstError();
                 if (error) {
                     throw new Error(error);
@@ -578,6 +622,12 @@ export function renderWorkItem(container, item, options = {}) {
     ), subtitle);
     header.append(headerCopy);
     const headerActions = element("div", "work-item-header-actions");
+    if (options.onAddTask) {
+        const addTask = element("button", "primer-button secondary work-item-add-task", "Add task");
+        addTask.type = "button";
+        addTask.addEventListener("click", () => options.onAddTask());
+        headerActions.append(addTask);
+    }
     if (options.editMode) {
         headerActions.append(actions.host);
     } else {
@@ -641,7 +691,14 @@ export function renderWorkItem(container, item, options = {}) {
     );
     if (children) mainColumn.append(children);
 
-    mainColumn.append(discussionSection(item, options));
+    if (options.onUploadAttachment) {
+        const attachments = element("section", "work-item-card work-item-attachments");
+        const heading = element("div", "work-item-card-header");
+        heading.append(element("h2", "work-item-card-title", "Attachments"));
+        attachments.append(heading, createAttachmentUpload({ onUploadAttachment: options.onUploadAttachment }).host);
+        mainColumn.append(attachments);
+    }
+    mainColumn.append(discussionSection(item, options, value => { composer = value; }));
     body.append(mainColumn);
 
     const relatedGroups = (item.relations || []).filter((group) => group.name !== "Development" && group.name !== "Children");
@@ -663,6 +720,10 @@ export function renderWorkItem(container, item, options = {}) {
     container.append(view);
 
     if (options.editMode) {
-        queueMicrotask(() => fields.first()?.focus());
+        queueMicrotask(() => {
+            fields.first()?.focus();
+            if (options.draft) options.onDirtyChange?.(fields.anyDirty());
+        });
     }
+    return { getDraft };
 }

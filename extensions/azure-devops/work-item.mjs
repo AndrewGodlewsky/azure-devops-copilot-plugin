@@ -449,6 +449,7 @@ export function mapWorkItem(workItem, typeDefinition = null) {
         // one it came from and a detail request has to be able to scope itself.
         project: fieldValue(workItem, "System.TeamProject"),
         assignedTo: fieldValue(workItem, "System.AssignedTo"),
+        tags: normalizeString(workItem.fields?.["System.Tags"]).split(";").map((tag) => tag.trim()).filter(Boolean),
         changedDate: fieldValue(workItem, "System.ChangedDate"),
         webUrl: normalizeString(workItem?._links?.html?.href),
     };

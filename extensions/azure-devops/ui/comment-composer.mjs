@@ -1,4 +1,5 @@
 import { createSearchPicker } from "./search-picker.mjs";
+import { captureAttachmentInsertion, createAttachmentUpload, restoreAttachmentPreviews } from "./attachment-upload.mjs";
 
 function element(tagName, className, text) {
     const node = document.createElement(tagName);
@@ -73,17 +74,21 @@ function serializeNode(node) {
     if (node.classList.contains("comment-mention")) {
         return `@<${node.dataset.mentionId}>`;
     }
+    if (node.classList.contains("comment-attachment")) return node.dataset.attachmentReference || "";
     if (node.tagName === "BR") return "\n";
     const content = [...node.childNodes].map(serializeNode).join("");
     return ["DIV", "P"].includes(node.tagName) ? `${content}\n` : content;
 }
 
-export function serializeCommentBody(body) {
+function commentSource(body) {
     return [...body.childNodes]
         .map(serializeNode)
         .join("")
-        .replace(/\u200b/g, "")
-        .replace(/\n+$/, "");
+        .replace(/\u200b/g, "");
+}
+
+export function serializeCommentBody(body) {
+    return commentSource(body).replace(/\n+$/, "");
 }
 
 function insertPlainText(body, text) {
@@ -221,6 +226,8 @@ export function createCommentComposer({
     value = "",
     mentions = [],
     onChange,
+    onUploadAttachment,
+    imageUrl,
 }) {
     const host = element("div", "comment-composer");
     host.setAttribute("role", "group");
@@ -235,6 +242,7 @@ export function createCommentComposer({
     body.dataset.placeholder = label;
     body.spellcheck = true;
     seedBody(body, value, mentions);
+    restoreAttachmentPreviews(body, imageUrl);
     const actions = element("div", "comment-composer-actions");
     const submit = element("button", "primer-button comment-submit", submitLabel);
     submit.type = "button";
@@ -262,7 +270,7 @@ export function createCommentComposer({
         const ids = [...body.querySelectorAll(".comment-mention")]
             .map((node) => String(node.dataset.mentionId || "").toUpperCase());
         return {
-            content: serializeCommentBody(body),
+            content: commentSource(body),
             mentions: [...new Set(ids)].map((id) => mentionById.get(id)).filter(Boolean),
         };
     };
@@ -296,6 +304,7 @@ export function createCommentComposer({
         updateInlineMention();
     });
     body.addEventListener("paste", (event) => {
+        if (upload?.handlePaste(event)) return;
         event.preventDefault();
         insertPlainText(body, event.clipboardData?.getData("text/plain") || "");
         body.dispatchEvent(new body.ownerDocument.defaultView.Event("input", { bubbles: true }));
@@ -314,6 +323,10 @@ export function createCommentComposer({
     };
     const submitComment = async () => {
         if (busy) return;
+        if (upload?.isUploading()) {
+            setError("Wait for the attachments to finish uploading before posting.");
+            return;
+        }
         const content = serializeCommentBody(body);
         if (!content.trim()) {
             setError("Comment text cannot be empty.");
@@ -481,10 +494,16 @@ export function createCommentComposer({
 
     actions.append(submit);
     if (cancel) actions.append(cancel);
+    const upload = onUploadAttachment ? createAttachmentUpload({
+        onUploadAttachment,
+        captureInsertion: () => captureAttachmentInsertion(body, { format: "comment", imageUrl, preserveDetached: Boolean(onChange) }),
+    }) : null;
     host.append(body, picker, mentionStatus, actions, error);
+    if (upload) host.insertBefore(upload.host, actions);
     return {
         host,
         focus: () => body.focus(),
         getValue: () => serializeCommentBody(body),
+        getDraft: draftValue,
     };
 }

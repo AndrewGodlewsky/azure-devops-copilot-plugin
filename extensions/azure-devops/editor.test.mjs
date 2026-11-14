@@ -43,6 +43,112 @@ function click(node) {
     node.dispatchEvent(new window.Event("click"));
 }
 
+test("pasted screenshots upload at the Markdown caret without losing edits made while uploading", needsDom, async () => {
+    const { createMarkdownField } = await import("./ui/editor.mjs");
+    let finish;
+    const editor = createMarkdownField({ label: "Description", value: "Before after", onUploadAttachment: () => new Promise(resolve => { finish = resolve; }) });
+    mount(editor.host);
+    const source = editor.host.querySelector("textarea");
+    source.setSelectionRange(7, 7);
+    const paste = new window.Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [new window.File(["image"], "shot.png", { type: "image/png" })], getData: () => "" } });
+    source.dispatchEvent(paste);
+    assert.equal(paste.defaultPrevented, true);
+    await Promise.resolve();
+    source.value += " edited";
+    source.dispatchEvent(new window.Event("input"));
+    finish({ attachment: { url: "https://dev.azure.com/example/project/_apis/wit/attachments/abc", fileName: "shot.png" } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.match(editor.getValue(), /^Before !\[shot\.png\]/);
+    assert.match(editor.getValue(), /after edited$/);
+    assert.equal(editor.isDirty(), true);
+    editor.host.remove();
+});
+
+test("HTML draft restore preserves formatting and stores original image URLs behind previews", needsDom, async () => {
+    const { createHtmlField } = await import("./ui/editor.mjs");
+    const url = "https://dev.azure.com/example/project/_apis/wit/attachments/abc";
+    const editor = createHtmlField({ label: "Description", value: "<p>Original</p>", draftValue: `<table><tbody><tr><td style="color:red">Draft<img src="${url}"></td></tr></tbody></table>`, imageUrl: () => "/api/attachment?nonce=test" });
+    assert.match(editor.getValue(), /<table>/);
+    assert.match(editor.getValue(), /style="color:red"/);
+    assert.ok(editor.getValue().includes(url));
+    assert.equal(editor.getValue().includes("nonce=test"), false);
+    assert.equal(editor.host.querySelector("img").getAttribute("src"), "/api/attachment?nonce=test");
+    assert.equal(editor.isDirty(), true);
+});
+
+test("copying an HTML image keeps its original Azure URL in the draft", needsDom, async () => {
+    const { createHtmlField } = await import("./ui/editor.mjs");
+    const url = "https://dev.azure.com/example/project/_apis/wit/attachments/abc";
+    const editor = createHtmlField({ label: "Description", value: `<p><img src="${url}"></p>`, imageUrl: source => source === url ? "/api/attachment?nonce=test" : source });
+    const body = editor.host.querySelector(".editor-html");
+    const copy = body.querySelector("img").cloneNode(true);
+    copy.setAttribute("src", copy.src);
+    body.append(copy);
+    body.dispatchEvent(new window.Event("input"));
+    assert.equal(editor.getDraftValue().includes("nonce=test"), false);
+    assert.equal(editor.getDraftValue().split(url).length, 3);
+});
+
+test("an upload that finishes after an editor is removed does not mutate an abandoned field", needsDom, async () => {
+    const { createMarkdownField } = await import("./ui/editor.mjs");
+    let finish;
+    const editor = createMarkdownField({ label: "Description", value: "Keep text", onUploadAttachment: () => new Promise(resolve => { finish = resolve; }) });
+    mount(editor.host);
+    const source = editor.host.querySelector("textarea");
+    const event = new window.Event("paste", { cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { files: [new window.File(["image"], "shot.png", { type: "image/png" })] } });
+    source.dispatchEvent(event);
+    await Promise.resolve();
+    editor.host.remove();
+    finish({ attachment: { url: "https://dev.azure.com/example/project/_apis/wit/attachments/abc", fileName: "shot.png" } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(editor.getValue(), "Keep text");
+});
+
+test("a failed screenshot upload keeps the HTML and text typed while it was pending", needsDom, async () => {
+    const { createHtmlField } = await import("./ui/editor.mjs");
+    let rejectUpload;
+    const editor = createHtmlField({ label: "Description", value: '<p><strong>Keep</strong> this</p>', onUploadAttachment: () => new Promise((_, reject) => { rejectUpload = reject; }) });
+    mount(editor.host);
+    const body = editor.host.querySelector(".editor-html");
+    const paste = new window.Event("paste", { cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [new window.File(["image"], "shot.png", { type: "image/png" })] } });
+    body.dispatchEvent(paste);
+    await Promise.resolve();
+    assert.ok(editor.host.querySelector("progress"));
+    body.querySelector("p").append(" and new text");
+    body.dispatchEvent(new window.Event("input"));
+    rejectUpload(new Error("No connection. Retry the upload."));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(editor.getValue(), '<p><strong>Keep</strong> this and new text</p>');
+    assert.match(editor.host.querySelector('[role="alert"]').textContent, /No connection/);
+    assert.equal(editor.host.querySelector("progress"), null);
+    editor.host.remove();
+});
+
+test("pasting into HTML inserts at the saved caret and stores the Azure URL", needsDom, async () => {
+    const { createHtmlField } = await import("./ui/editor.mjs");
+    const url = "https://dev.azure.com/example/project/_apis/wit/attachments/abc";
+    const editor = createHtmlField({ label: "Description", value: '<p style="color: red">Before after</p>', imageUrl: () => "/api/attachment?nonce=test", onUploadAttachment: async () => ({ attachment: { url, fileName: "shot.png" } }) });
+    mount(editor.host);
+    const body = editor.host.querySelector(".editor-html");
+    const range = document.createRange();
+    range.setStart(body.querySelector("p").firstChild, 7);
+    range.collapse(true);
+    document.getSelection().removeAllRanges();
+    document.getSelection().addRange(range);
+    const paste = new window.Event("paste", { cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [new window.File(["image"], "shot.png", { type: "image/png" })] } });
+    body.dispatchEvent(paste);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.match(editor.getValue(), /Before <img[^>]+>after/);
+    assert.ok(editor.getValue().includes(url));
+    assert.equal(editor.getValue().includes("nonce=test"), false);
+    assert.equal(body.querySelector("img").getAttribute("src"), "/api/attachment?nonce=test");
+    editor.host.remove();
+});
+
 test("a description is saved exactly as typed, including trailing-space line breaks", needsDom, async () => {
     const { createMarkdownField } = await import("./ui/editor.mjs");
     // Two trailing spaces are how Azure DevOps spells a line break. A round trip

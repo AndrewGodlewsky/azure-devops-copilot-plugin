@@ -58,6 +58,79 @@ const descriptionSection = {
     fields: [{ name: "Description", field: "System.Description", isHtml: true, value: "<p>Body</p>" }],
 };
 
+test("Add task is available before a parent has any children", needsDom, () => {
+    let added = 0;
+    const host = render(workItem(), { onAddTask: () => { added += 1; } });
+    const button = [...host.querySelectorAll("button")].find(node => node.textContent === "Add task");
+    assert.ok(button);
+    button.click();
+    assert.equal(added, 1);
+});
+
+test("restored field and comment drafts remain dirty and every edit updates the snapshot", needsDom, async () => {
+    const host = document.createElement("div");
+    const changes = [];
+    let saved;
+    const handle = renderWorkItem(host, workItem({ templateSections: [descriptionSection] }), {
+        editMode: true, onAddComment() {}, onSave: fields => { saved = fields; },
+        draft: { fields: [{ name: "System.Title", value: "Restored title" }, { name: "System.Description", value: '<p style="color: red">Draft <strong>format</strong></p>', isHtml: true }], comment: { content: "Pending comment", mentions: [] } },
+        onDraftChange: draft => changes.push(draft),
+    });
+    assert.ok(handle?.getDraft);
+    assert.equal(changes.length, 0, "rendering does not write a draft before the user changes anything");
+    assert.equal(host.querySelector('[aria-label="Title"]').value, "Restored title");
+    assert.match(host.querySelector(".editor-html").innerHTML, /<strong>format<\/strong>/);
+    assert.equal(handle.getDraft().comment.content, "Pending comment");
+    const title = host.querySelector('[aria-label="Title"]');
+    for (const value of ["First edit", "Second edit  "]) {
+        title.value = value;
+        title.dispatchEvent(new window.Event("input"));
+    }
+    assert.equal(changes.at(-1).fields.find(field => field.name === "System.Title").value, "Second edit  ");
+    host.querySelector(".editor-save").click();
+    await Promise.resolve();
+    assert.equal(saved.find(field => field.name === "System.Title").value, "Second edit");
+    assert.match(saved.find(field => field.name === "System.Description").value, /style="color: red"/);
+});
+
+test("a partial Markdown draft keeps trailing spaces before the next line is typed", needsDom, () => {
+    const host = document.createElement("div");
+    let latest;
+    const item = workItem({ templateSections: [{ title: "Description", fields: [{ name: "Description", field: "System.Description", value: "Line", format: "markdown" }] }] });
+    const handle = renderWorkItem(host, item, { editMode: true, onDraftChange: draft => { latest = draft; } });
+    const source = host.querySelector("textarea");
+    source.value = "Line  ";
+    source.dispatchEvent(new window.Event("input"));
+    assert.equal(latest.fields[0]?.value, "Line  ");
+    const restored = renderWorkItem(host, item, { editMode: true, draft: handle.getDraft() });
+    assert.equal(host.querySelector("textarea").value, "Line  ");
+    assert.equal(restored.getDraft().fields[0]?.value, "Line  ");
+});
+
+test("Save waits for a pending description attachment and then includes its original URL", needsDom, async () => {
+    let finish;
+    let saved;
+    const url = "https://dev.azure.com/example/project/_apis/wit/attachments/abc";
+    const host = render(workItem({ templateSections: [descriptionSection] }), {
+        editMode: true,
+        onUploadAttachment: () => new Promise(resolve => { finish = resolve; }),
+        onSave: fields => { saved = fields; },
+    });
+    const paste = new window.Event("paste", { cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [new window.File(["image"], "shot.png", { type: "image/png" })] } });
+    host.querySelector(".editor-html").dispatchEvent(paste);
+    await Promise.resolve();
+    host.querySelector(".editor-save").click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(saved, undefined);
+    assert.match(host.textContent, /Wait for the attachments/);
+    finish({ attachment: { url, fileName: "shot.png" } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    host.querySelector(".editor-save").click();
+    await Promise.resolve();
+    assert.ok(saved.find(field => field.name === "System.Description").value.includes(url));
+});
+
 test("child tasks appear in the main column without duplicating sidebar relations", needsDom, () => {
     const children = [
         { id: 51, kind: "work-item", label: "Task 51", title: "Build the widget", state: "To Do" },

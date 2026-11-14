@@ -39,6 +39,8 @@ import {
     relatedWorkItemIds,
     resolveWorkItemReference,
 } from "./work-item.mjs";
+import { createWorkspaceService, MAX_UPLOAD_BYTES, readBoundedBody } from "./workspace-server.mjs";
+import { createWorkspaceStore, MAX_DRAFT_BYTES, MAX_PREFERENCES_BYTES } from "./workspace-store.mjs";
 
 const DEFAULT_API_VERSION = "7.1";
 const HOME_LIST_LIMIT = 10;
@@ -104,6 +106,8 @@ let silentAgencyAuthAttempt = null;
 // afterwards. Sign-in work outlives the request that started it.
 let authGeneration = 0;
 let copilotSession;
+const workspaceService = createWorkspaceService({ fetchJson, parseOrganization, validateWriteHtml, ErrorType: CanvasError });
+const workspaceStore = createWorkspaceStore(join(homedir(), ".copilot", "azure-devops-canvas", "workspace"));
 
 function loadExtensionVersion() {
     try {
@@ -927,7 +931,8 @@ async function fetchJson(config, path, options = {}) {
         headers: authHeaders(token, options.headers),
         body: options.body,
     });
-    return readAzureDevOpsJson(response, token);
+    const data = await readAzureDevOpsJson(response, token);
+    return options.withContinuation ? { data, continuationToken: response.headers.get("x-ms-continuationtoken") || "" } : data;
 }
 
 async function fetchImageDataUri(config, path, options = {}) {
@@ -2755,6 +2760,78 @@ function connectionSelector(url) {
     };
 }
 
+async function workspaceAccount(config) {
+    const token = await getRequestToken();
+    const claims = parseJwtPayload(token.accessToken);
+    if (claims?.tid && claims?.oid) return `entra:${claims.tid}:${claims.oid}`;
+    const data = await fetchJson(config, "_apis/connectionData", { apiVersion: "7.1-preview" });
+    const id = normalizeString(data.authenticatedUser?.id || data.authorizedUser?.id);
+    if (!id) throw new CanvasError("azure_devops_identity_required", "Azure DevOps could not identify the signed-in account. Sign in again.");
+    return `ado:${parseOrganization(config.organization).org.toLowerCase()}:${id}`;
+}
+
+async function readWorkspaceJson(req, maximum = 1024 * 1024) {
+    const bytes = await readBoundedBody(req, maximum, () => new CanvasError("azure_devops_request_too_large", "The request is too large to save."));
+    try {
+        const value = JSON.parse(bytes.toString("utf8") || "{}");
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid object");
+        return value;
+    }
+    catch { throw new CanvasError("azure_devops_invalid_json", "Request body is not valid JSON."); }
+}
+
+async function handleWorkspaceApi(entry, req, res, url) {
+    const match = /^\/api\/work-items\/(\d+)\/(draft|attachments)$/.exec(url.pathname);
+    if (!url.pathname.startsWith("/api/workspace/") && !match) return false;
+    const connection = await requireConnection(entry.input, connectionSelector(url));
+    await getRequestToken();
+    const selectedProject = normalizeString(url.searchParams.get("workItemProject"));
+    let config = { ...connectionOverrides(connection), project: connection.project || selectedProject, apiVersion: DEFAULT_API_VERSION };
+    const isProjectId = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+    if (isProjectId(config.project) || isProjectId(selectedProject)) config = await workspaceService.project(config);
+    if (connection.project && selectedProject
+        && ![config.project, config.projectId].some((value) => value?.toLowerCase() === selectedProject.toLowerCase())) {
+        throw new CanvasError("azure_devops_unknown_project", "Choose this project through an organization-level connection.");
+    }
+    const query = Object.fromEntries(url.searchParams);
+    const route = `${req.method} ${url.pathname}`;
+    let payload;
+    if (route === "GET /api/workspace/metadata") payload = await workspaceService.metadata(config);
+    else if (route === "GET /api/workspace/items") payload = await workspaceService.items(config, query);
+    else if (route === "POST /api/workspace/items") payload = await workspaceService.createItem(config, await readWorkspaceJson(req));
+    else if (route === "GET /api/workspace/boards") payload = await workspaceService.boards(config, query.team);
+    else if (route === "GET /api/workspace/board") payload = await workspaceService.board(config, query.team, query.boardId);
+    else if (route === "PATCH /api/workspace/board/move") payload = await workspaceService.move(config, query.team, query.boardId, await readWorkspaceJson(req));
+    else if (route === "GET /api/workspace/dashboard") payload = await workspaceService.dashboard(config);
+    else if (url.pathname === "/api/workspace/preferences" && ["GET", "PATCH"].includes(req.method)) {
+        const account = await workspaceAccount(config);
+        try {
+            payload = { preferences: req.method === "GET" ? workspaceStore.preferences(account)
+                : workspaceStore.updatePreferences(account, await readWorkspaceJson(req, MAX_PREFERENCES_BYTES)) };
+        } catch (error) { throw new CanvasError(error.code || "azure_devops_workspace_write_failed", error.message); }
+    } else if (match?.[2] === "draft" && ["GET", "PUT", "DELETE"].includes(req.method)) {
+        const id = Number(match[1]);
+        const projectName = await resolveWorkItemProject(config, id);
+        const scope = { ...config, project: projectName };
+        const account = await workspaceAccount(scope);
+        try {
+            if (req.method === "DELETE") {
+                workspaceStore.deleteDraft(account, scope, id);
+                payload = { draft: null };
+            } else payload = { draft: req.method === "GET" ? workspaceStore.draft(account, scope, id)
+                : workspaceStore.saveDraft(account, scope, id, await readWorkspaceJson(req, MAX_DRAFT_BYTES)) };
+        } catch (error) { throw new CanvasError(error.code || "azure_devops_workspace_write_failed", error.message); }
+    } else if (match?.[2] === "attachments" && req.method === "POST") {
+        if (headerValue(req.headers["content-type"]).split(";")[0].toLowerCase() !== "application/octet-stream") {
+            throw new CanvasError("azure_devops_invalid_upload_type", "Send the file as application/octet-stream.");
+        }
+        const bytes = await readBoundedBody(req, MAX_UPLOAD_BYTES, () => new CanvasError("azure_devops_attachment_too_large", "Attachments must be 60 MiB or smaller."));
+        payload = await workspaceService.upload(config, Number(match[1]), query.fileName, bytes);
+    } else { notFound(res); return true; }
+    jsonResponse(res, 200, payload);
+    return true;
+}
+
 async function handleApi(entry, req, res, url) {
     try {
         if (req.method === "GET" && url.pathname === "/api/config") {
@@ -2813,6 +2890,7 @@ async function handleApi(entry, req, res, url) {
             return;
         }
         validateApiRequest(entry, req);
+        if (await handleWorkspaceApi(entry, req, res, url)) return;
         if (req.method === "POST" && url.pathname === "/api/auth/start") {
             const body = await readRequestBody(req);
             const provider = normalizeString(body.provider).toLowerCase();

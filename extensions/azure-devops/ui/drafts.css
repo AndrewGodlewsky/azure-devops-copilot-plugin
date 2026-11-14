@@ -1,0 +1,9 @@
+.workspace-nav-button { display: block; width: 100%; padding: 10px 12px 10px 28px; border: 0; text-align: left; background: transparent; color: inherit; font-weight: 500; }
+.workspace-nav-button[aria-current="page"] { background: var(--background-color-accent-muted, rgba(9,105,218,.12)); color: var(--text-color-accent, #0969da); }
+.workspace-create-button { width: 100%; margin-top: 10px; }
+.draft-notice { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border-color-muted, #d8dee4); border-radius: 8px; background: var(--background-color-muted, #f6f8fa); font-size: 12px; }
+.draft-notice:empty { display: none; }
+.draft-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.draft-conflict { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border-color-muted, #d8dee4); }
+.draft-conflict p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow: auto; }
+.draft-conflict select { width: 100%; }

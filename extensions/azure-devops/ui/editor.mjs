@@ -21,6 +21,7 @@
 import { renderRichText } from "./rich-text.mjs";
 import { isSafeWriteUrl } from "./rich-text-policy.mjs";
 import { canEditStoredHtml, fromEditableHtml, toEditableFragment } from "./editable-html.mjs";
+import { captureAttachmentInsertion, createAttachmentUpload } from "./attachment-upload.mjs";
 
 function element(tagName, className, text) {
     const node = document.createElement(tagName);
@@ -370,7 +371,7 @@ function insertMarkdownLink(textarea, url) {
  * @param {{ label: string, value: string, onDirtyChange?: (dirty: boolean) => void, onSubmit?: () => void, onCancel?: () => void, imageUrl?: (url: string) => string }} options
  * @returns {{ host: Element, getValue: () => string, isDirty: () => boolean, focus: () => void }}
  */
-export function createMarkdownField({ label, value, onDirtyChange, onSubmit, onCancel, imageUrl }) {
+export function createMarkdownField({ label, value, draftValue, onDirtyChange, onChange, onSubmit, onCancel, imageUrl, onUploadAttachment }) {
     // Only trailing whitespace is dropped, and only at the very end. Leading
     // whitespace is load-bearing -- four spaces on the first line start a code
     // block -- so trimming both ends would rewrite the description the moment the
@@ -379,7 +380,7 @@ export function createMarkdownField({ label, value, onDirtyChange, onSubmit, onC
 
     const body = element("div", "editor-markdown");
     const source = element("textarea", "editor-body editor-source");
-    source.value = original;
+    source.value = draftValue === undefined ? original : String(draftValue);
     source.rows = Math.min(24, Math.max(6, original.split("\n").length + 2));
     source.spellcheck = true;
     source.setAttribute("aria-label", `${label} (Markdown)`);
@@ -389,7 +390,7 @@ export function createMarkdownField({ label, value, onDirtyChange, onSubmit, onC
     body.append(source, preview);
 
     let mode = "write";
-    let dirty = false;
+    let dirty = currentValue() !== original;
 
     function currentValue() {
         // Trailing whitespace is trimmed at the very end of the document only.
@@ -404,6 +405,7 @@ export function createMarkdownField({ label, value, onDirtyChange, onSubmit, onC
             dirty = next;
             onDirtyChange?.(dirty);
         }
+        onChange?.();
     }
 
     const toolbar = element("div", "editor-toolbar");
@@ -513,6 +515,14 @@ export function createMarkdownField({ label, value, onDirtyChange, onSubmit, onC
     applyMode();
 
     const shell = fieldShell({ label, toolbar, body });
+    const upload = onUploadAttachment ? createAttachmentUpload({
+        onUploadAttachment,
+        captureInsertion: () => captureAttachmentInsertion(source, { format: "markdown", preserveDetached: Boolean(onChange) }),
+    }) : null;
+    if (upload) {
+        shell.host.append(upload.host);
+        source.addEventListener("paste", event => upload.handlePaste(event));
+    }
     shell.host.insertBefore(bar, body);
     const refreshToolbar = trackToolbarState(shell.host, buttons);
 
@@ -537,6 +547,9 @@ export function createMarkdownField({ label, value, onDirtyChange, onSubmit, onC
     return {
         host: shell.host,
         getValue: () => currentValue(),
+        getDraftValue: () => source.value,
+        hasDraftChange: () => source.value !== original,
+        isUploading: () => Boolean(upload?.isUploading()),
         isDirty: () => dirty,
         focus: () => {
             setMode("write");
@@ -545,20 +558,21 @@ export function createMarkdownField({ label, value, onDirtyChange, onSubmit, onC
     };
 }
 
-export function createPlainField({ label, value, required = false, onDirtyChange, onSubmit, onCancel }) {
+export function createPlainField({ label, value, draftValue, required = false, onDirtyChange, onChange, onSubmit, onCancel }) {
     const initial = String(value ?? "");
     const body = element("input", "editor-body editor-plain");
     body.type = "text";
-    body.value = initial;
+    body.value = draftValue === undefined ? initial : String(draftValue);
     body.setAttribute("aria-label", label);
 
-    let dirty = false;
+    let dirty = body.value !== initial;
     body.addEventListener("input", () => {
         const next = body.value !== initial;
         if (next !== dirty) {
             dirty = next;
             onDirtyChange?.(dirty);
         }
+        onChange?.();
     });
     body.addEventListener("keydown", (event) => {
         if (event.key === "Enter" && onSubmit) {
@@ -575,6 +589,7 @@ export function createPlainField({ label, value, required = false, onDirtyChange
     return {
         ...shell,
         getValue: () => body.value.trim(),
+        getDraftValue: () => body.value,
         isDirty: () => dirty,
         validate: () => (required && !body.value.trim() ? `${label} cannot be empty.` : ""),
         focus: () => body.focus(),
@@ -587,7 +602,7 @@ export function createPlainField({ label, value, required = false, onDirtyChange
  * @param {{ label: string, value: string, options: string[], onDirtyChange?: () => void }} config
  * @returns {{ host: Element, getValue: () => string, isDirty: () => boolean, focus: () => void }}
  */
-export function createChoiceField({ label, value, options, onDirtyChange }) {
+export function createChoiceField({ label, value, draftValue, options, onDirtyChange, onChange }) {
     const initial = String(value ?? "");
     const body = element("select", "editor-body editor-choice");
     body.setAttribute("aria-label", label);
@@ -597,14 +612,23 @@ export function createChoiceField({ label, value, options, onDirtyChange }) {
         option.selected = choice === initial;
         body.append(option);
     }
+    if (draftValue !== undefined) {
+        if (!options.includes(String(draftValue))) {
+            const restored = element("option", "", String(draftValue));
+            restored.value = String(draftValue);
+            body.append(restored);
+        }
+        body.value = String(draftValue);
+    }
 
-    let dirty = false;
+    let dirty = body.value !== initial;
     body.addEventListener("change", () => {
         const next = body.value !== initial;
         if (next !== dirty) {
             dirty = next;
             onDirtyChange?.(dirty);
         }
+        onChange?.();
     });
 
     const shell = fieldShell({ label, toolbar: null, body });
@@ -632,7 +656,7 @@ export function createChoiceField({ label, value, options, onDirtyChange }) {
  * @param {{ label: string, value: string, onDirtyChange?: () => void, onSubmit?: () => void, onCancel?: () => void }} config
  * @returns {{ host: Element, getValue: () => string, isDirty: () => boolean, isHtml: boolean, focus: () => void }}
  */
-export function createHtmlField({ label, value, onDirtyChange, onSubmit, onCancel }) {
+export function createHtmlField({ label, value, draftValue, onDirtyChange, onChange, onSubmit, onCancel, imageUrl, onUploadAttachment }) {
     const body = element("div", "editor-body editor-html");
     // Set as an attribute rather than through the property: jsdom does not
     // implement contentEditable, so the property assignment silently does nothing
@@ -644,14 +668,40 @@ export function createHtmlField({ label, value, onDirtyChange, onSubmit, onCance
     body.setAttribute("aria-label", label);
     body.append(toEditableFragment(value));
     const initial = body.innerHTML;
+    if (draftValue !== undefined) body.replaceChildren(toEditableFragment(draftValue));
+    const originalImages = new Map();
+    const currentHtml = () => {
+        const clone = body.cloneNode(true);
+        for (const image of clone.querySelectorAll("img")) {
+            const original = originalImages.get(image.getAttribute("src"));
+            if (original) image.setAttribute("src", original);
+        }
+        return fromEditableHtml(clone.innerHTML);
+    };
+    const previewImages = () => {
+        if (!imageUrl) return;
+        for (const image of body.querySelectorAll("img")) {
+            const url = image.getAttribute("src");
+            if (!url || originalImages.has(url)) continue;
+            const preview = imageUrl(url);
+            if (preview && preview !== url) {
+                originalImages.set(preview, url);
+                originalImages.set(new URL(preview, body.ownerDocument.baseURI).href, url);
+                image.setAttribute("src", preview);
+            }
+        }
+    };
+    previewImages();
 
-    let dirty = false;
+    let dirty = currentHtml() !== initial;
     body.addEventListener("input", () => {
-        const next = body.innerHTML !== initial;
+        previewImages();
+        const next = currentHtml() !== initial;
         if (next !== dirty) {
             dirty = next;
             onDirtyChange?.(dirty);
         }
+        onChange?.();
     });
     // Enter inserts a line break here rather than saving, because this is a
     // multi-line body. Save is Cmd/Ctrl+Enter and cancel is Escape, bound through
@@ -665,6 +715,7 @@ export function createHtmlField({ label, value, onDirtyChange, onSubmit, onCance
     // `onerror` does not wait for the save to run. The predicate is the same one
     // that decides whether a field is editable at all, so the two cannot drift.
     body.addEventListener("paste", (event) => {
+        if (upload?.handlePaste(event)) return;
         const html = event.clipboardData?.getData("text/html");
         if (!html || canEditStoredHtml(html)) {
             return;
@@ -678,15 +729,22 @@ export function createHtmlField({ label, value, onDirtyChange, onSubmit, onCance
         range.deleteContents();
         range.insertNode(body.ownerDocument.createTextNode(event.clipboardData.getData("text/plain") || ""));
         selection.collapseToEnd();
-        body.dispatchEvent(new Event("input", { bubbles: true }));
+        body.dispatchEvent(new body.ownerDocument.defaultView.Event("input", { bubbles: true }));
     });
 
     bindShortcuts(body, [], { onSave: onSubmit, onCancel });
 
     const shell = fieldShell({ label, toolbar: null, body });
+    const upload = onUploadAttachment ? createAttachmentUpload({
+        onUploadAttachment,
+        captureInsertion: () => captureAttachmentInsertion(body, { format: "html", preserveDetached: Boolean(onChange) }),
+    }) : null;
+    if (upload) shell.host.append(upload.host);
     return {
         ...shell,
-        getValue: () => fromEditableHtml(body.innerHTML),
+        getValue: currentHtml,
+        getDraftValue: currentHtml,
+        isUploading: () => Boolean(upload?.isUploading()),
         isDirty: () => dirty,
         isHtml: true,
         focus: () => body.focus(),

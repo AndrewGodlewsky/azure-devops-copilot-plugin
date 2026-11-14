@@ -16,6 +16,8 @@ const describeDom = { skip: JSDOM ? false : "jsdom is not installed" };
 const html = readFileSync(new URL("./ui/index.html", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./ui/styles.css", import.meta.url), "utf8");
 const allPreviewFeatures = { boards: true, delegation: true };
+const windows = [];
+test.afterEach(() => { for (const window of windows.splice(0)) window.close(); });
 
 // Drives the real app.mjs against a real DOM through the same controls a user
 // clicks. Nothing is exported from the app for testing.
@@ -42,7 +44,7 @@ function makeFetch(state) {
                         authType: state.configAuthProcess ? "none" : "azureauth",
                         azureAuthDiscovery: { selected: "x" },
                     },
-                    connections: state.connections === undefined ? [connection] : state.connections,
+                    connections: state.connections === undefined ? state.homeConnections || [connection] : state.connections,
                     hasDefaultConnection: Boolean(state.hasDefaultConnection),
                     project: "Project",
                     workItemReference: Boolean(state.workItemReference),
@@ -63,7 +65,39 @@ function makeFetch(state) {
         }
         if (path.includes("/api/current-work-item")) {
             state.currentWorkItemCalls = (state.currentWorkItemCalls || 0) + 1;
-            return json({ workItem: { id: 900, type: "Bug", title: "Referenced item", relations: state.relations || [] } });
+            return json({ workItem: { id: 900, rev: 1, type: "Bug", title: "Referenced item", relations: state.relations || [] } });
+        }
+        if (path.includes("/api/workspace/preferences")) {
+            if (options.method === "PATCH") state.preferences = { ...state.preferences, ...JSON.parse(options.body) };
+            return json({ preferences: state.preferences || {} });
+        }
+        const params = new URL(path, "http://localhost").searchParams;
+        const selected = (state.homeConnections || [connection]).find(entry => entry.organization === params.get("organization") && (entry.project || "") === (params.get("project") || "")) || connection;
+        const workItems = () => (selected.workItems || state.homeWorkItems || []).map(entry => {
+            const [id, project] = Array.isArray(entry) ? entry : [entry, selected.project || "project"];
+            return { id, rev: 1, project, title: `WI ${id}`, type: "Task", state: "Active", ...state.workItemsById?.[id] };
+        });
+        if (path.includes("/api/workspace/metadata")) return json({ projects: (state.projects || ["project", "Alpha", "Beta"]).map(name => ({ id: name, name })), types: [{ name: "Task", states: [{ name: "Active" }, { name: "Closed" }] }], teams: [{ id: "team", name: "Project Team" }] });
+        if (path.includes("/api/workspace/dashboard")) {
+            state.homeRequests = (state.homeRequests || 0) + 1;
+            if (state.homeError) return { ok: false, json: async () => ({ message: state.homeError }) };
+            const response = json({ current: { workItems: workItems() }, blocked: { workItems: [] }, unfinished: { workItems: [] }, completed: { workItems: [] } });
+            return state.holdHome ? state.holdHome.then(() => response) : response;
+        }
+        if (path.includes("/api/workspace/items")) return json({ workItems: workItems(), count: workItems().length });
+        if (path.includes("/api/workspace/boards")) return json({ boards: state.boards || [{ id: "stories", name: "Stories" }, { id: "features", name: "Features" }] });
+        if (path.includes("/api/workspace/board")) {
+            state.boardRequests = [...(state.boardRequests || []), path];
+            if (state.boardError) return { ok: false, json: async () => ({ message: state.boardError }) };
+            const response = json({ columns: [{ id: "new", name: "New" }, { id: "active", name: "Active" }], workItems: workItems().map(item => ({ ...item, columnId: "active" })) });
+            return state.holdBoard ? state.holdBoard.then(() => response) : response;
+        }
+        if (/\/api\/work-items\/\d+\/draft/.test(path)) {
+            const id = path.match(/work-items\/(\d+)/)[1];
+            state.drafts ||= {};
+            if (options.method === "PUT") state.drafts[id] = JSON.parse(options.body);
+            if (options.method === "DELETE") delete state.drafts[id];
+            return json({ draft: state.drafts[id] || null });
         }
         if (path.includes("/api/organizations")) {
             return json({ organizations: (state.organizations || []).map((name) => ({ name, id: name })), error: "" });
@@ -79,65 +113,9 @@ function makeFetch(state) {
             state.connections = [{ ...connection, ...JSON.parse(options.body || "{}"), source: "last-used" }];
             return json({ connections: state.connections });
         }
-        if (path.includes("/api/home")) {
-            state.homeRequests = (state.homeRequests || 0) + 1;
-            const response = json({
-                connections: (state.homeConnections || [connection]).map((entry) => ({
-                    ...entry,
-                    myBoards: {
-                        boards: (entry.boards || state.homeBoards || []).map((board, index) => ({
-                            id: board.id || `favorite-${index + 1}`,
-                            name: board.name || `Board ${index + 1}`,
-                            organization: entry.organization || connection.organization,
-                            project: entry.project || connection.project,
-                            team: board.team || "Project Team",
-                            backlogLevel: board.backlogLevel || "Stories",
-                            url: board.url || `https://dev.azure.com/example/project/_boards/board/t/Project%20Team/${encodeURIComponent(board.backlogLevel || "Stories")}`,
-                        })),
-                        otherProjectBoardCount: entry.otherProjectBoardCount || state.otherProjectBoardCount || 0,
-                    },
-                    // An organization-scope list spans projects, so a row may carry
-                    // one of its own; entries are either a bare id or [id, project].
-                    myWorkItems: { workItems: (entry.workItems || state.homeWorkItems || []).map((entryId) => {
-                        const [id, project] = Array.isArray(entryId) ? entryId : [entryId, ""];
-                        return {
-                            id,
-                            title: `WI ${id}`,
-                            type: "Task",
-                            state: "Active",
-                            project,
-                            typeIcon: state.workItemTypeIcon || "",
-                        };
-                    }) },
-                })),
-            });
-            return state.holdHome ? state.holdHome.then(() => response) : response;
-        }
         if (path.includes("/api/feature-flags")) {
             state.featureFlags = JSON.parse(options.body || "{}");
             return json({ featureFlags: state.featureFlags });
-        }
-        if (path.includes("/api/boards/open")) {
-            const body = JSON.parse(options.body || "{}");
-            state.openedBoards = [...(state.openedBoards || []), body];
-            const board = (state.homeBoards || []).find((candidate) => candidate.id === body.id) || {
-                id: body.id,
-                name: "Board",
-            };
-            const token = `board-${state.openedBoards.length}`;
-            return json({
-                board: {
-                    ...board,
-                    organization: body.organization,
-                    project: body.project,
-                },
-                token,
-                path: `/boards/${token}/`,
-            });
-        }
-        if (/\/api\/boards\/[^/]+$/.test(path) && options.method === "DELETE") {
-            state.closedBoards = [...(state.closedBoards || []), path.split("/").pop()];
-            return json({ closed: true });
         }
         if (path.includes("/api/identities")) {
             state.identityQueries = [...(state.identityQueries || []), path];
@@ -166,10 +144,22 @@ function makeFetch(state) {
             const id = Number(wiUpdate[1]);
             const body = JSON.parse(options.body);
             state.workItemUpdates = [...(state.workItemUpdates || []), { id, path, body }];
+            if (state.workItemsById?.[id]?.rev && body.rev !== state.workItemsById[id].rev) return {
+                ok: false, status: 400, json: async () => ({ error: "azure_devops_work_item_out_of_date", message: "Revision conflict" }),
+            };
             const title = body.fields.find(field => field.name === "System.Title")?.value;
             state.workItemsById ||= {};
-            state.workItemsById[id] = { ...state.workItemsById[id], ...(title === undefined ? {} : { title }) };
-            return json({ workItem: { id, type: "Task", title: `WI ${id}`, relations: [], ...state.workItemsById[id] } });
+            state.workItemsById[id] = { ...state.workItemsById[id], rev: body.rev + 1, ...(title === undefined ? {} : { title }) };
+            const response = json({ workItem: { id, rev: 2, type: "Task", title: `WI ${id}`, relations: [], ...state.workItemsById[id] } });
+            return state.holdWorkItemUpdate ? state.holdWorkItemUpdate.then(() => response) : response;
+        }
+        const wiAttachment = path.match(/\/api\/work-items\/(\d+)\/attachments/);
+        if (wiAttachment) {
+            const id = Number(wiAttachment[1]);
+            state.workItemsById ||= {};
+            state.workItemsById[id] = { ...state.workItemsById[id], rev: (state.workItemsById[id]?.rev || 1) + 1 };
+            state.attachments = [...(state.attachments || []), { id, path, file: options.body }];
+            return json({ attachment: { url: "https://dev.azure.com/example/project/_apis/wit/attachments/fixture-file", fileName: options.body.name } });
         }
         const wiComment = path.match(/\/api\/work-items\/(\d+)\/comments/);
         if (wiComment) {
@@ -181,9 +171,10 @@ function makeFetch(state) {
             if (state.workItemCommentError) {
                 return { ok: false, json: async () => ({ error: "azure_devops_request_failed", message: state.workItemCommentError }) };
             }
-            return json({
+            const response = json({
                 workItem: {
                     id: Number(wiComment[1]),
+                    rev: 2,
                     type: "Task",
                     title: `WI ${wiComment[1]}`,
                     ...state.workItemsById?.[Number(wiComment[1])],
@@ -192,6 +183,7 @@ function makeFetch(state) {
                     relations: state.relations || [],
                 },
             });
+            return state.holdWorkItemComment ? state.holdWorkItemComment.then(() => response) : response;
         }
         const wi = path.match(/\/api\/work-items\/(\d+)\/details/);
         if (wi) {
@@ -206,6 +198,7 @@ function makeFetch(state) {
             const response = json({
                 workItem: {
                     id,
+                    rev: 1,
                     type: "Task",
                     title: `WI ${wi[1]}`,
                     commentCount: 0,
@@ -232,6 +225,7 @@ function deferred() {
 async function boot(state = {}) {
     const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
     const { window } = dom;
+    windows.push(window);
     // app.mjs calls the bare global fetch, and Node's rejects relative URLs.
     const fetchImpl = makeFetch(state);
     window.fetch = fetchImpl;
@@ -294,6 +288,7 @@ test("attachment app registration: work-item images use the nonce proxy after sa
 test("attachment URLs retain each rendering tab's connection across organizations and previews", describeDom, async (t) => {
     const source = "https://dev.azure.com/fabrikam/4e1c4e8f-0c57-4a25-9a4e-2e2c2f4d8a55/_apis/wit/attachments/06f5932c-aa2f-4545-9764-8546bec98914?fileName=image.png";
     const { window } = await boot({
+        featureFlags: { boards: true },
         homeConnections: [
             { organization: "contoso", project: "Widgets", workItems: [300] },
             { organization: "fabrikam", project: "Boxes", workItems: [400] },
@@ -318,10 +313,13 @@ test("attachment URLs retain each rendering tab's connection across organization
         assert.equal(url.searchParams.get("nonce"), "n");
         assert.equal(url.searchParams.get("url"), source);
     };
+    await chooseWorkspaceConnection(window, "fabrikam");
     await openFromHome(window, 400);
     assertConnection(window.document.querySelector(".tab-panel:not([hidden]) .section-field-value img"), "fabrikam", "Boxes");
+    await chooseWorkspaceConnection(window, "contoso");
     await openFromHome(window, 300);
     assertConnection(window.document.querySelector(".tab-panel:not([hidden]) .section-field-value img"), "contoso", "Widgets");
+    await chooseWorkspaceConnection(window, "fabrikam");
     await openFromHome(window, 400);
     const edit = window.document.querySelector(".tab-panel:not([hidden]) .inline-edit");
     assert.ok(edit);
@@ -334,19 +332,30 @@ test("attachment URLs retain each rendering tab's connection across organization
     assertConnection(window.document.querySelector(".tab-panel:not([hidden]) .editor-preview img"), "fabrikam", "Boxes");
 });
 
+function findHomeLink(w, label) {
+    return [...w.document.querySelectorAll("#homeContent .workspace-item-link")]
+        .find(node => node.getAttribute("aria-label")?.includes(` ${label}:`));
+}
 async function openFromHome(w, label) {
-    const link = [...w.document.querySelectorAll("#homeContent .home-row-label")]
-        .find((node) => node.querySelector(".home-row-id")?.textContent === String(label));
+    const link = findHomeLink(w, label);
     assert.ok(link, `no Home row for ${label}`);
     link.click();
     await settle();
 }
 
-async function openBoardFromHome(w, name) {
-    const link = [...w.document.querySelectorAll("#homeContent .home-row-label")]
-        .find((node) => node.querySelector(".home-row-title")?.textContent === name);
-    assert.ok(link, `no Home board row for ${name}`);
-    link.click();
+async function showWorkspace(window, view) {
+    if (view === "home") bar(window).querySelector('.view-tab[data-tab-id] .view-tab-label').click();
+    else window.document.querySelector(`[data-workspace-view="${view}"]`).click();
+    await settle();
+}
+
+async function chooseWorkspaceConnection(window, name) {
+    await showWorkspace(window, "home");
+    const select = window.document.querySelector('.workspace-scope [aria-label="Organization connection"]');
+    const option = [...select.options].find(option => option.textContent.startsWith(name));
+    assert.ok(option, `no connection for ${name}`);
+    select.value = option.value;
+    select.dispatchEvent(new window.Event("change"));
     await settle();
 }
 
@@ -436,7 +445,7 @@ test("failed silent AzureAuth ends at the sign-in chooser", describeDom, async (
     assert.equal(window.document.getElementById("startupSplash").hidden, true);
     assert.equal(window.document.getElementById("signInSplash").hidden, false);
     assert.equal(window.document.getElementById("canvasContent").hidden, true);
-    assert.equal(window.document.getElementById("signInAgencyButton").hidden, false);
+    assert.equal(window.document.getElementById("signInAgencyButton").hidden, true);
     assert.equal(
         window.document.getElementById("signInAgencyButton").textContent,
         "Agency (AzureAuth)",
@@ -482,7 +491,7 @@ test("Boards startup, connections, navigation, editing, and comments require no 
         assert.doesNotMatch(window.document.getElementById("homeContent").textContent, /pull requests?|pipelines?|repositories|current branch/i);
         assert.deepEqual(state.requests.filter(({ path }) => /pull-requests?|repositories|pipelines?|new-session-branch|\/_apis\/git\//i.test(path)), []);
     };
-    assert.deepEqual(sectionTitles(window), ["My boards", "Open work items"]);
+    assert.deepEqual(sectionTitles(window), ["My current work", "Blocked work", "Parents with unfinished work", "Recently completed"]);
     assertNoRepos();
 
     window.document.getElementById("connectionsButton").click();
@@ -520,111 +529,55 @@ test("Boards startup, connections, navigation, editing, and comments require no 
     assertNoRepos();
 });
 
-test("favorite boards open as independent closable tabs using their Home connection", describeDom, async () => {
-    const { window, state } = await boot({
-        featureFlags: allPreviewFeatures,
-        homeBoards: [
-            { id: "favorite-stories", name: "Stories board", team: "Web Team", backlogLevel: "Stories" },
-            { id: "favorite-features", name: "Features board", team: "Platform Team", backlogLevel: "Features" },
-        ],
-    });
-
-    assert.deepEqual(
-        [...window.document.querySelectorAll(".home-active-work .home-section-title")].map((node) => node.textContent),
-        ["My boards", "Open work items"],
-    );
-    const boardSection = [...window.document.querySelectorAll(".home-section")]
-        .find((section) => section.querySelector(".home-section-title")?.textContent === "My boards");
-    const firstBoardRow = boardSection?.querySelector(".home-row");
-    assert.equal(firstBoardRow?.querySelector(".home-row-id")?.textContent, "");
-    assert.ok(firstBoardRow?.querySelector(".home-row-icon svg path"));
-    assert.equal(firstBoardRow?.querySelector(".home-row-meta"), null);
-
-    await openBoardFromHome(window, "Stories board");
-    assert.deepEqual(titles(window), ["Home", "Stories board"]);
-    assert.equal(activeTitle(window), "Stories board");
-    assert.equal(window.document.querySelector(".board-frame")?.getAttribute("src"), "/boards/board-1/");
-    assert.deepEqual(state.openedBoards[0], {
-        id: "favorite-stories",
-        organization: "example",
-        project: "project",
-    });
-
-    await clickTab(window, 0);
-    await openBoardFromHome(window, "Features board");
-    assert.deepEqual(titles(window), ["Home", "Stories board", "Features board"]);
-    assert.equal(activeTitle(window), "Features board");
-    assert.equal(visiblePanels(window).length, 1);
-    const boardTabCloseIcon = tabEls(window)[1].querySelector(".view-tab-close svg");
-    assert.equal(boardTabCloseIcon?.getAttribute("data-icon-source"), "octicon");
-    assert.equal(boardTabCloseIcon?.getAttribute("data-icon-name"), "x");
-
+test("native board selection stays inside the workspace and preserves open item views", describeDom, async () => {
+    const { window, state } = await boot({ homeWorkItems: [42] });
+    await openFromHome(window, 42);
+    const itemPanel = visiblePanels(window)[0];
+    await showWorkspace(window, "board");
+    assert.equal(window.document.querySelector(".workspace-heading").textContent, "Board");
+    assert.deepEqual([...window.document.querySelectorAll('.workspace-scope [aria-label="Board"] option')].map(option => option.textContent), ["Stories", "Features"]);
+    assert.deepEqual([...window.document.querySelectorAll(".workspace-board-column h2")].map(node => node.textContent), ["New", "Active"]);
+    assert.equal(window.document.querySelector("iframe"), null);
+    assert.match(state.boardRequests.at(-1), /organization=example&project=project&workItemProject=project&team=team&boardId=stories/);
+    const board = window.document.querySelector('.workspace-scope [aria-label="Board"]');
+    board.value = "features";
+    board.dispatchEvent(new window.Event("change"));
+    await settle();
+    assert.match(state.boardRequests.at(-1), /boardId=features/);
+    assert.deepEqual(titles(window), ["Home", "Task 42"]);
+    await openFromHome(window, 42);
+    assert.equal(visiblePanels(window)[0], itemPanel);
+    assert.equal(titles(window).length, 2, "the native board reuses the open item");
     await closeTab(window, 1);
-    assert.deepEqual(titles(window), ["Home", "Features board"]);
-    assert.deepEqual(state.closedBoards, ["board-1"]);
+    assert.equal(window.document.querySelector(".workspace-heading").textContent, "Board");
+    assert.equal(window.document.querySelector('[data-workspace-view="board"]').getAttribute("aria-current"), "page");
+    assert.deepEqual(state.requests.filter(({ path }) => /api\/boards\/open|^\/boards\//.test(path)), []);
 });
 
-test("Home rows are clickable and use official icons with work-item-only delegation", describeDom, async () => {
-    const workItemTypeIcon = "data:image/svg+xml;base64,PHN2Zy8+";
-    const { window, state } = await boot({
-        featureFlags: allPreviewFeatures,
-        homeWorkItems: [[42, "Widgets"]],
-        workItemTypeIcon,
-    });
-
-    assert.match(styles, /\.home-row-label \{[^}]*color: var\(--text-color-default, #1f2328\)/);
-    assert.match(styles, /\.home-row-interactive:hover \{[^}]*background: var\(--background-color-control-transparent-hover/);
-    assert.match(styles, /\.home-row-hitbox \{[^}]*position: absolute;[^}]*inset: 0/);
-    assert.match(styles, /\.home-row-label\.has-leading-icon \+ \.home-row-meta \{[^}]*margin-inline-start: 24px/);
-    assert.match(styles, /\.home-row-side \{[^}]*justify-content: flex-end/);
-    assert.match(styles, /\.home-row-delegation \{[^}]*flex: 0 0 32px;[^}]*width: 32px/);
-    assert.match(styles, /\.primer-button\.home-row-delegate \{[^}]*width: 32px;[^}]*height: 24px;[^}]*padding: 0 8px/);
-
-    const workItemIcon = window.document.querySelector(".home-work-item-type-icon");
-    assert.equal(workItemIcon?.getAttribute("src"), workItemTypeIcon);
-    assert.equal(workItemIcon?.getAttribute("data-icon-source"), "azure-devops");
-    assert.equal(workItemIcon?.getAttribute("data-icon-name"), "Task");
-
-    const workItemRow = workItemIcon.closest(".home-row");
-    assert.equal(workItemRow.getAttribute("role"), null);
-    assert.equal(workItemRow.querySelector(".home-row-hitbox")?.tagName, "BUTTON");
-    assert.equal(workItemRow.querySelector(".home-row-hitbox")?.getAttribute("aria-label"), "Open Task 42: WI 42");
-    const delegateButton = workItemRow.querySelector(".home-row-delegate");
-    const delegateStatus = workItemRow.querySelector(".home-row-action-status");
-    assert.ok(delegateButton.classList.contains("primer-button"));
-    assert.ok(delegateButton.classList.contains("secondary"));
-    assert.equal(delegateButton.querySelector('[data-icon-name="device-desktop"]')?.getAttribute("data-icon-source"), "octicon");
-    assert.equal(delegateButton.querySelector('[data-icon-name="device-desktop"]')?.getAttribute("width"), "14");
-    assert.equal(delegateButton.textContent, "");
-    state.workItemDelegationResult = { ok: false, error: "Delegation unavailable" };
-    delegateButton.click();
+test("Home item links are keyboard accessible and delegation errors remain inside item details", describeDom, async () => {
+    const { window, state } = await boot({ featureFlags: allPreviewFeatures, homeWorkItems: [[42, "Widgets"]] });
+    const link = findHomeLink(window, 42);
+    assert.equal(link.tagName, "BUTTON");
+    assert.equal(link.getAttribute("aria-label"), "Open Task 42: WI 42");
+    link.focus();
+    assert.equal(window.document.activeElement, link);
+    link.click();
     await settle();
-    assert.equal(delegateStatus?.getAttribute("role"), "alert");
-    assert.equal(delegateStatus?.getAttribute("aria-live"), "assertive");
-    assert.deepEqual(titles(window), ["Home"], "delegating does not activate the row");
-
-    state.workItemDelegationResult = { ok: true, state: "Active" };
-    delegateButton.click();
-    await settle();
+    const runDelegation = async result => {
+        state.workItemDelegationResult = result;
+        const menu = visiblePanels(window)[0].querySelector(".work-item-delegate-menu");
+        menu.querySelector(".primer-action-menu-trigger").click();
+        menu.querySelector('[data-component="ActionList.Item"]').click();
+        await settle();
+        return visiblePanels(window)[0].querySelector(".work-item-delegation-status").textContent;
+    };
+    assert.match(await runDelegation({ ok: false, error: "Delegation unavailable" }), /Delegation unavailable/);
+    assert.match(await runDelegation({ ok: true, state: "Active" }), /Delegated to a local Copilot session/);
     assert.equal(state.workItemDelegations.at(-1).id, 42);
     assert.match(state.workItemDelegations.at(-1).path, /workItemProject=Widgets/);
     assert.deepEqual(state.workItemDelegations.at(-1).body, { mode: "local", force: false });
-    assert.equal(delegateStatus?.getAttribute("role"), "status");
-    assert.equal(delegateStatus?.getAttribute("aria-live"), "polite");
-    assert.equal(delegateStatus?.textContent, "Delegation requested");
-    assert.equal(delegateButton.disabled, false, "a completed delegation can be retried");
-    assert.equal(delegateButton.classList.contains("is-complete"), true);
-
-    state.workItemDelegationResult = { ok: false, error: "Retry failed" };
-    delegateButton.click();
-    await settle();
-    assert.equal(delegateButton.classList.contains("is-complete"), false);
-    assert.equal(delegateButton.classList.contains("is-error"), true);
-    assert.equal(delegateStatus?.textContent, "Retry failed");
-
-    workItemRow.querySelector(".home-row-meta").click();
-    await settle();
-    assert.equal(activeTitle(window), "Task 42", "clicking outside the title opens the row");
+    assert.match(await runDelegation({ ok: false, error: "Retry failed" }), /Retry failed/);
+    assert.deepEqual(titles(window), ["Home", "Task 42"]);
 });
 
 test("Home hides work-item delegation when the preview feature is disabled", describeDom, async () => {
@@ -632,137 +585,58 @@ test("Home hides work-item delegation when the preview feature is disabled", des
     assert.equal(window.document.querySelector(".home-work-item-row .home-row-delegate"), null);
 });
 
-test("board cards open the shared work item UI in a drawer with one Delegate menu", describeDom, async () => {
-    const { window, state } = await boot({
-        featureFlags: allPreviewFeatures,
-        homeBoards: [
-            { id: "favorite-stories", name: "Stories board", team: "Web Team", backlogLevel: "Stories" },
-        ],
-    });
-    await openBoardFromHome(window, "Stories board");
-    const frame = window.document.querySelector(".board-frame");
-    assert.ok(frame?.contentWindow);
-    const backgroundControl = window.document.getElementById("refreshButton");
-    backgroundControl.focus();
-
-    window.dispatchEvent(new window.MessageEvent("message", {
-        origin: window.location.origin,
-        source: frame.contentWindow,
-        data: {
-            source: "azure-devops-board",
-            type: "open-work-item",
-            id: 42,
-            project: "project",
-        },
-    }));
+test("native board cards open the shared details and retain edits across workspace navigation", describeDom, async () => {
+    const { window, state } = await boot({ featureFlags: allPreviewFeatures, homeWorkItems: [42] });
+    await showWorkspace(window, "board");
+    const card = window.document.querySelector(".workspace-board-card");
+    assert.ok(card);
+    const link = card.querySelector(".workspace-item-link");
+    link.focus();
+    assert.equal(window.document.activeElement, link);
+    link.click();
     await settle();
+    assert.equal(activeTitle(window), "Task 42");
+    assert.match(state.workItemRequests[0], /organization=example&project=project&workItemProject=project/);
+    const itemPanel = visiblePanels(window)[0];
+    assert.equal(itemPanel.querySelectorAll(".work-item-delegate-menu").length, 1);
+    assert.ok(itemPanel.querySelector(".work-item-title-row > .inline-edit"));
+    const input = editTitle(window, "Draft from the board");
+    const composer = itemPanel.querySelector(".comment-composer-body");
+    composer.textContent = "Unsent board note";
+    composer.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await showWorkspace(window, "items");
+    await showWorkspace(window, "board");
+    await openFromHome(window, 42);
+    assert.equal(visiblePanels(window)[0], itemPanel);
+    assert.equal(itemPanel.querySelector(".work-item-title-edit input"), input);
+    assert.equal(input.value, "Draft from the board");
+    assert.equal(composer.textContent, "Unsent board note");
+    assert.equal(state.workItemUpdates, undefined);
+    window.confirm = () => false;
+    await closeTab(window, 1);
+    assert.equal(activeTitle(window), "Task 42");
+    assert.equal(input.value, "Draft from the board");
+});
 
-    const drawer = window.document.getElementById("workItemDrawer");
-    assert.equal(drawer.hidden, false);
-    assert.ok(drawer.classList.contains("open"));
-    assert.equal(window.document.activeElement, window.document.getElementById("workItemDrawerClose"));
-    assert.equal(window.document.getElementById("homePanel").closest(".canvas-layout").getAttribute("aria-hidden"), "true");
-    assert.equal(window.document.getElementById("homePanel").closest(".canvas-layout").hasAttribute("inert"), true);
-    assert.equal(backgroundControl.getAttribute("aria-hidden"), null);
-    assert.equal(backgroundControl.closest("footer").getAttribute("aria-hidden"), "true");
-    assert.equal(backgroundControl.closest("footer").hasAttribute("inert"), true);
-    const firstDrawerControl = window.document.getElementById("workItemDrawerExpand");
-    firstDrawerControl.focus();
-    firstDrawerControl.dispatchEvent(new window.KeyboardEvent("keydown", {
-        key: "Tab",
-        shiftKey: true,
-        bubbles: true,
-        cancelable: true,
-    }));
-    assert.ok(drawer.contains(window.document.activeElement), "Shift+Tab remains inside the modal drawer");
-    assert.notEqual(window.document.activeElement, firstDrawerControl, "Shift+Tab wraps to the last control");
-    assert.equal(drawer.querySelector(".work-item-title")?.textContent, "WI 42");
-    assert.deepEqual(titles(window), ["Home", "Stories board"], "opening a card does not create a full-page tab");
-    assert.match(state.workItemRequests[0], /organization=example/);
-    assert.match(state.workItemRequests[0], /project=project/);
-
-    const delegate = drawer.querySelector(".work-item-delegate-menu");
-    assert.equal(delegate?.querySelector(".primer-action-menu-trigger-label")?.textContent, "Delegate");
-    const delegateTrigger = delegate.querySelector(".primer-action-menu-trigger");
-    assert.ok(delegateTrigger.classList.contains("primary"));
-    assert.equal(
-        delegate.parentElement,
-        drawer.querySelector(".work-item-header-actions"),
-        "Delegate stays in the far-right action area",
-    );
-    assert.equal(delegate.parentElement.childElementCount, 1);
-    assert.equal(drawer.querySelector(".work-item-header")?.lastElementChild, delegate.parentElement);
-    assert.ok(drawer.querySelector(".work-item-title-row > .inline-edit"));
-    assert.match(styles, /\.work-item-title-row\s*\{[^}]*justify-content: flex-start/);
-    assert.match(styles, /\.work-item-title-row\s*\{[^}]*align-items: flex-start/);
-    assert.match(styles, /\.detail-value\s*\{[^}]*overflow: hidden[^}]*text-overflow: ellipsis[^}]*white-space: nowrap/);
-    assert.match(styles, /\.state-pill-label\s*\{[^}]*overflow: hidden[^}]*text-overflow: ellipsis[^}]*white-space: nowrap/);
-    assert.equal(drawer.querySelector(".work-item-open-button"), null);
-    delegateTrigger.click();
-    assert.deepEqual(
-        [...delegate.querySelectorAll(".primer-action-list-label")].map((node) => node.textContent),
-        ["Delegate locally"],
-    );
-
-    const messages = [];
-    frame.contentWindow.postMessage = (message) => messages.push(message);
-    delegate.querySelector('[data-component="ActionList.Item"]').click();
-    assert.deepEqual(messages[0], {
-        source: "azure-devops-canvas",
-        type: "delegate-work-item",
-        requestId: "delegate-1",
-        mode: "local",
-        id: 42,
-    });
-
-    window.dispatchEvent(new window.MessageEvent("message", {
-        origin: window.location.origin,
-        source: frame.contentWindow,
-        data: {
-            source: "azure-devops-board",
-            type: "delegation-result",
-            requestId: "delegate-1",
-            result: { ok: true, state: "Active" },
-        },
-    }));
+test("creation dialog traps keyboard focus and Escape restores the launching control", describeDom, async () => {
+    const { window, state } = await boot();
+    const launch = window.document.querySelector(".workspace-header button");
+    launch.focus();
+    launch.click();
     await settle();
-    assert.equal(
-        drawer.querySelector(".work-item-delegation-status")?.textContent,
-        "Delegated to a local Copilot session.",
-    );
-
-    assert.equal(
-        window.document.querySelector("#workItemDrawerExpand path")?.getAttribute("d"),
-        "M1.75 10a.75.75 0 0 1 .75.75v2.5c0 .138.112.25.25.25h2.5a.75.75 0 0 1 0 1.5h-2.5A1.75 1.75 0 0 1 1 13.25v-2.5a.75.75 0 0 1 .75-.75Zm12.5 0a.75.75 0 0 1 .75.75v2.5A1.75 1.75 0 0 1 13.25 15h-2.5a.75.75 0 0 1 0-1.5h2.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 .75-.75ZM2.75 2.5a.25.25 0 0 0-.25.25v2.5a.75.75 0 0 1-1.5 0v-2.5C1 1.784 1.784 1 2.75 1h2.5a.75.75 0 0 1 0 1.5ZM10 1.75a.75.75 0 0 1 .75-.75h2.5c.966 0 1.75.784 1.75 1.75v2.5a.75.75 0 0 1-1.5 0v-2.5a.25.25 0 0 0-.25-.25h-2.5a.75.75 0 0 1-.75-.75Z",
-        "Expand uses Primer screen-full-16",
-    );
-    assert.equal(
-        window.document.querySelector("#workItemDrawerClose path")?.getAttribute("d"),
-        "M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z",
-        "Close uses Primer x-16",
-    );
-    assert.match(styles, /\.work-item-drawer-icon\s*\{[^}]*flex: 0 0 30px[^}]*width: 30px[^}]*height: 30px/);
-    window.document.getElementById("workItemDrawerExpand").click();
-    await settle();
-    assert.equal(drawer.classList.contains("open"), false);
-    assert.equal(window.document.getElementById("homePanel").closest(".canvas-layout").hasAttribute("aria-hidden"), false);
-    assert.equal(window.document.getElementById("homePanel").closest(".canvas-layout").hasAttribute("inert"), false);
-    assert.equal(backgroundControl.closest("footer").hasAttribute("aria-hidden"), false);
-    assert.equal(backgroundControl.closest("footer").hasAttribute("inert"), false);
-    assert.equal(window.document.activeElement, backgroundControl);
-    assert.deepEqual(titles(window), ["Home", "Stories board", "Task 42"]);
-
-    const workItemTab = visiblePanels(window)[0];
-    const tabDelegate = workItemTab.querySelector(".work-item-delegate-menu");
-    assert.equal(tabDelegate?.parentElement, workItemTab.querySelector(".work-item-header-actions"));
-    assert.equal(tabDelegate.parentElement.childElementCount, 1);
-    assert.equal(workItemTab.querySelector(".work-item-header")?.lastElementChild, tabDelegate.parentElement);
-    assert.ok(workItemTab.querySelector(".work-item-title-row > .inline-edit"));
-    tabDelegate.querySelector(".primer-action-menu-trigger").click();
-    assert.deepEqual(
-        [...tabDelegate.querySelectorAll(".primer-action-list-label")].map((node) => node.textContent),
-        ["Delegate locally"],
-    );
+    const dialog = window.document.querySelector(".workspace-create-dialog");
+    assert.equal(dialog.getAttribute("aria-modal"), "true");
+    assert.ok(dialog.contains(window.document.activeElement));
+    const first = dialog.querySelector('select:not(:disabled)');
+    first.focus();
+    first.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
+    assert.equal(window.document.activeElement, dialog.querySelector('button[type="submit"]'));
+    window.document.activeElement.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    assert.equal(window.document.activeElement, first);
+    dialog.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    assert.equal(window.document.querySelector(".workspace-create-dialog"), null);
+    assert.equal(window.document.activeElement, launch);
+    assert.deepEqual(state.requests.filter(({ path, method }) => path.includes("/api/workspace/items") && method === "POST"), []);
 });
 
 test("work items opened directly from Home expose local delegation", describeDom, async () => {
@@ -795,73 +669,51 @@ test("work items opened directly from Home expose local delegation", describeDom
     );
 });
 
-test("disabling delegation removes it from an open work item", describeDom, async () => {
-    const { window } = await boot({
-        featureFlags: allPreviewFeatures,
-        homeWorkItems: [42],
-    });
+test("disabled delegation stays absent from work-item details and the removed preview controls stay absent", describeDom, async () => {
+    const { window } = await boot({ featureFlags: { delegation: false }, homeWorkItems: [42] });
     await openFromHome(window, 42);
-
-    assert.ok(visiblePanels(window)[0].querySelector(".work-item-delegate-menu"));
-    const delegationToggle = window.document.getElementById("delegationFeatureFlag");
-    delegationToggle.checked = false;
-    delegationToggle.dispatchEvent(new window.Event("change"));
-    await settle();
-
     assert.equal(visiblePanels(window)[0].querySelector(".work-item-delegate-menu"), null);
+    assert.equal(window.document.getElementById("delegationFeatureFlag"), null);
+    assert.equal(window.document.getElementById("boardsFeatureFlag"), null);
 });
 
-test("My boards explains when favorites belong to other projects", describeDom, async () => {
-    const { window } = await boot({
-        featureFlags: { boards: true },
-        otherProjectBoardCount: 9,
-    });
-    const boards = [...window.document.querySelectorAll(".home-section")]
-        .find((section) => section.querySelector(".home-section-title")?.textContent === "My boards");
-
-    assert.match(boards?.textContent || "", /No favorite boards in project\. 9 favorite boards are in other projects\./);
-    assert.equal(boards?.querySelector("button")?.textContent, "Choose another project");
+test("native board failure offers retry without losing the selected board", describeDom, async () => {
+    const { window, state } = await boot({ boardError: "The board is temporarily unavailable." });
+    await showWorkspace(window, "board");
+    assert.match(window.document.querySelector('.workspace-screen [role="alert"]').textContent, /temporarily unavailable/);
+    const board = window.document.querySelector('.workspace-scope [aria-label="Board"]');
+    assert.equal(board.value, "stories");
+    state.boardError = "";
+    window.document.querySelector('.workspace-screen [role="alert"] button').click();
+    await settle();
+    assert.ok(window.document.querySelector(".workspace-board"));
+    assert.equal(window.document.querySelector('.workspace-scope [aria-label="Board"]').value, "stories");
 });
 
-test("Home shows animated progress for exactly as long as its data is unresolved", describeDom, async () => {
+test("Home shows progress for exactly as long as its data is unresolved", describeDom, async () => {
     const home = deferred();
     const { window } = await boot({ holdHome: home.promise });
 
-    const loading = window.document.querySelector(".home-loading-state");
+    const loading = window.document.querySelector(".workspace-screen");
     assert.ok(loading);
     assert.equal(loading.getAttribute("aria-busy"), "true");
-    assert.equal(loading.querySelector(".loading-title")?.textContent, "Loading your Azure DevOps work");
-    assert.equal(loading.querySelector(".loading-detail")?.textContent, "Fetching work items.");
-    assert.ok(loading.querySelector(".loading-spinner-large .loading-spinner-svg"));
+    assert.match(loading.textContent, /Loading home/);
 
     home.resolve();
     await settle();
-    assert.equal(window.document.querySelector(".home-loading-state"), null);
-    assert.ok(window.document.querySelector(".home-active-work"));
+    assert.equal(loading.hasAttribute("aria-busy"), false);
+    assert.match(loading.textContent, /My current work/);
 });
 
-test("Home loading omits boards after disabling the Boards preview", describeDom, async () => {
-    const initialHome = deferred();
-    const { window, state } = await boot({
-        featureFlags: { boards: true },
-        holdHome: initialHome.promise,
-    });
-
-    initialHome.resolve();
+test("Home always shows the dashboard and exposes retry after loading fails", describeDom, async () => {
+    const { window, state } = await boot({ featureFlags: { boards: true }, homeError: "Dashboard unavailable" });
+    assert.match(window.document.querySelector('.workspace-screen [role="alert"]').textContent, /Dashboard unavailable/);
+    state.homeError = "";
+    window.document.querySelector('.workspace-screen [role="alert"] button').click();
     await settle();
-    const home = deferred();
-    const boardsToggle = window.document.getElementById("boardsFeatureFlag");
-    state.holdHome = home.promise;
-    boardsToggle.checked = false;
-    boardsToggle.dispatchEvent(new window.Event("change"));
-    await settle();
-
-    assert.equal(
-        window.document.querySelector(".home-loading-state .loading-detail")?.textContent,
-        "Fetching work items.",
-    );
-    home.resolve();
-    await settle();
+    assert.deepEqual(sectionTitles(window), ["My current work", "Blocked work", "Parents with unfinished work", "Recently completed"]);
+    assert.equal(window.document.querySelector(".home-active-work, .board-frame"), null);
+    assert.deepEqual(state.requests.filter(({ path }) => path.startsWith("/api/home")), []);
 });
 
 test("Home remains visible with a saved organization connection", describeDom, async () => {
@@ -869,7 +721,7 @@ test("Home remains visible with a saved organization connection", describeDom, a
     assert.deepEqual(titles(window), ["Home"]);
     assert.equal(bar(window).hidden, false);
     assert.equal(window.document.querySelector(".home-current-session"), null);
-    assert.equal(window.document.querySelector(".home-active-work .home-group-title")?.textContent, "My active work");
+    assert.equal(window.document.querySelector(".workspace-heading")?.textContent, "Home");
 });
 
 test("several work items open as separate tabs", describeDom, async () => {
@@ -1214,8 +1066,7 @@ test("a slow tab load does not scroll whichever tab the user switched to", descr
     await clickTab(window, 0);
 
     // Start 102, then return to 101 before 102 resolves.
-    const link = [...window.document.querySelectorAll("#homeContent .home-row-label")]
-        .find((n) => n.querySelector(".home-row-id")?.textContent === "102");
+    const link = findHomeLink(window, 102);
     link.click();
     await settle();
     await clickTab(window, 1);
@@ -1237,8 +1088,7 @@ test("closing a tab mid-load discards its result", describeDom, async () => {
 
     await openFromHome(window, "101");
     await clickTab(window, 0);
-    const link = [...window.document.querySelectorAll("#homeContent .home-row-label")]
-        .find((n) => n.querySelector(".home-row-id")?.textContent === "102");
+    const link = findHomeLink(window, 102);
     link.click();
     await settle();
     assert.deepEqual(titles(window), ["Home", "Task 101", "Work item 102"]);
@@ -1313,8 +1163,7 @@ test("switching to a slow tab and away again does not scroll the tab left behind
 
     await openFromHome(window, "101");
     await clickTab(window, 0);
-    const link = [...window.document.querySelectorAll("#homeContent .home-row-label")]
-        .find((n) => n.querySelector(".home-row-id")?.textContent === "102");
+    const link = findHomeLink(window, 102);
     link.click();
     await settle();
 
@@ -1338,7 +1187,7 @@ test("switching to a slow tab and away again does not scroll the tab left behind
 // Organization and project selection preserve pending input and connection routing.
 
 const panel = (w) => w.document.getElementById("connectionPanel");
-const sectionTitles = (w) => [...w.document.querySelectorAll("#homeContent .home-section-title")].map((el) => el.textContent);
+const sectionTitles = (w) => [...w.document.querySelectorAll("#homeContent .workspace-dashboard-section h2")].map(el => el.textContent);
 
 test("with no saved connection, the canvas asks for an organization", describeDom, async () => {
     const { window } = await boot({ connections: [] });
@@ -1408,35 +1257,45 @@ test("the footer opens the picker over a working canvas, and cancel returns to i
     [...panel(window).querySelectorAll("button")].find((el) => el.textContent === "Cancel").click();
     await settle();
     assert.equal(panel(window).hidden, true);
-    assert.ok(sectionTitles(window).includes("Open work items"), "the canvas underneath is untouched");
+    assert.ok(findHomeLink(window, 101), "the canvas underneath is untouched");
 });
 
-test("two connections stack, most relevant first, and each is labelled", describeDom, async () => {
+test("workspace connections keep their configured order and label organization and project", describeDom, async () => {
     const { window } = await boot({
+        featureFlags: { boards: true },
         homeConnections: [
             { source: "last-used", organization: "contoso", project: "Widgets", isDefault: false, requiresProject: false, workItems: [11] },
             { source: "default", organization: "fabrikam", project: "Boxes", isDefault: true, requiresProject: false, workItems: [22] },
         ],
     });
-    const headings = [...window.document.querySelectorAll(".home-connection-name")].map((el) => el.textContent);
-    assert.deepEqual(headings, ["contoso / Widgets", "fabrikam / Boxes"], "the selected connection ranks above the default");
-    const pills = [...window.document.querySelectorAll(".connection-pill")].map((el) => el.textContent);
-    assert.deepEqual(pills, ["default"]);
+    const select = window.document.querySelector('.workspace-scope [aria-label="Organization connection"]');
+    assert.deepEqual([...select.options].map(option => option.textContent), ["contoso / Widgets", "fabrikam / Boxes"]);
+    assert.equal(select.value, "0");
+    assert.ok(findHomeLink(window, 11));
+    assert.equal(findHomeLink(window, 22), undefined);
+    await chooseWorkspaceConnection(window, "fabrikam");
+    assert.ok(findHomeLink(window, 22));
+    assert.equal(findHomeLink(window, 11), undefined);
 });
 
-test("a single connection is not labelled, so the one-organization case reads as it always did", describeDom, async () => {
+test("a single connection shows its scope without a duplicate connection heading", describeDom, async () => {
     const { window } = await boot({ homeWorkItems: [101] });
     assert.equal(window.document.querySelectorAll(".home-connection-name").length, 0);
+    const select = window.document.querySelector('.workspace-scope [aria-label="Organization connection"]');
+    assert.equal(select.options.length, 1);
+    assert.equal(select.selectedOptions[0].textContent, "example / project");
 });
 
 test("a row is fetched from the organization it was listed under", describeDom, async () => {
     const state = {
+        featureFlags: { boards: true },
         homeConnections: [
             { source: "last-used", organization: "contoso", project: "Widgets", isDefault: false, requiresProject: false, workItems: [101] },
             { source: "default", organization: "fabrikam", project: "Boxes", isDefault: true, requiresProject: false, workItems: [202] },
         ],
     };
     const { window } = await boot(state);
+    await chooseWorkspaceConnection(window, "fabrikam");
     await openFromHome(window, "202");
     assert.match(state.workItemRequests.at(-1), /organization=fabrikam/);
     assert.match(state.workItemRequests.at(-1), /project=Boxes/);
@@ -1445,22 +1304,19 @@ test("a row is fetched from the organization it was listed under", describeDom, 
 
 test("the same id in two organizations opens as two tabs, because they are two items", describeDom, async () => {
     const { window } = await boot({
+        featureFlags: { boards: true },
         homeConnections: [
             { source: "last-used", organization: "contoso", project: "Widgets", isDefault: false, requiresProject: false, workItems: [500] },
             { source: "default", organization: "fabrikam", project: "Boxes", isDefault: true, requiresProject: false, workItems: [500] },
         ],
     });
-    const links = [...window.document.querySelectorAll("#homeContent .home-row-label")]
-        .filter((node) => node.querySelector(".home-row-id")?.textContent === "500");
-    assert.equal(links.length, 2);
-    links[0].click();
-    await settle();
-    links[1].click();
-    await settle();
+    await openFromHome(window, 500);
+    await chooseWorkspaceConnection(window, "fabrikam");
+    await openFromHome(window, 500);
     assert.equal(titles(window).length, 3, "one Home and one tab per organization");
 });
 
-test("an organization connection offers a project picker for favorite boards", describeDom, async () => {
+test("an organization connection requires a selected project for the dashboard and native board", describeDom, async () => {
     const { window } = await boot({
         featureFlags: { boards: true },
         connections: [{ source: "default", organization: "fabrikam", project: "", isDefault: true, requiresProject: true }],
@@ -1468,22 +1324,27 @@ test("an organization connection offers a project picker for favorite boards", d
             { source: "default", organization: "fabrikam", project: "", isDefault: true, requiresProject: true, workItems: [11] },
         ],
     });
-    assert.match(window.document.querySelector("#homeContent").textContent, /Choose a project to see your favorite boards/);
-    const choose = [...window.document.querySelectorAll("#homeContent button")].find((el) => el.textContent === "Choose a project");
-    assert.ok(choose, "and there is a way to fix it from where the user noticed it");
-    choose.click();
+    assert.match(window.document.querySelector("#homeContent").textContent, /Choose a project to see your personal work dashboard/);
+    await showWorkspace(window, "board");
+    assert.match(window.document.querySelector("#homeContent").textContent, /Choose a project to open its team boards/);
+    const project = window.document.querySelector('.workspace-scope [aria-label="Project"]');
+    project.value = "project";
+    project.dispatchEvent(new window.Event("change"));
     await settle();
-    assert.equal(panel(window).hidden, false);
+    assert.ok(window.document.querySelector(".workspace-board"));
+    assert.equal(panel(window).hidden, true);
 });
 
 test("an organization-scope work item row carries its own project to the detail request", describeDom, async () => {
     const state = {
+        featureFlags: { boards: true },
         connections: [{ source: "default", organization: "fabrikam", project: "", isDefault: true, requiresProject: true }],
         homeConnections: [
             { source: "default", organization: "fabrikam", project: "", isDefault: true, requiresProject: true, workItems: [[4711, "Beta"]] },
         ],
     };
     const { window } = await boot(state);
+    await showWorkspace(window, "items");
     await openFromHome(window, "4711");
     const request = state.workItemRequests.at(-1);
     assert.match(request, /organization=fabrikam/);
@@ -1493,6 +1354,7 @@ test("an organization-scope work item row carries its own project to the detail 
 
 test("same-numbered organization-scope work items in different projects open separate tabs", describeDom, async () => {
     const state = {
+        featureFlags: { boards: true },
         connections: [{ source: "default", organization: "fabrikam", project: "", isDefault: true, requiresProject: true }],
         homeConnections: [
             {
@@ -1506,14 +1368,16 @@ test("same-numbered organization-scope work items in different projects open sep
         ],
     };
     const { window } = await boot(state);
-    const links = [...window.document.querySelectorAll("#homeContent .home-row-label")]
-        .filter((node) => node.querySelector(".home-row-id")?.textContent === "4711");
+    await showWorkspace(window, "items");
+    const links = [...window.document.querySelectorAll("#homeContent .workspace-item-link")]
+        .filter(node => node.getAttribute("aria-label")?.includes(" 4711:"));
     assert.equal(links.length, 2);
-
     links[0].click();
     await settle();
-    await clickTab(window, 0);
-    links[1].click();
+    await showWorkspace(window, "items");
+    const refreshed = [...window.document.querySelectorAll("#homeContent .workspace-item-link")]
+        .filter(node => node.getAttribute("aria-label")?.includes(" 4711:"));
+    refreshed[1].click();
     await settle();
 
     assert.deepEqual(titles(window), ["Home", "Task 4711", "Task 4711"]);
@@ -1646,7 +1510,7 @@ test("a changed field is saved when the engine raises change but not input", des
 test("footer refresh reloads the selected tab without returning to Home", describeDom, async () => {
     const { window, state } = await boot({ homeWorkItems: [101] });
     await openFromHome(window, "101");
-    state.workItemsById = { 101: { title: "Updated task", state: "Done" } };
+    state.workItemsById = { 101: { title: "Updated task", state: "Done", rev: 2 } };
 
     window.document.getElementById("refreshButton").click();
     await settle();
@@ -1711,4 +1575,203 @@ test("an action menu opens over its container instead of being clipped by it", d
     at({ top: 100, bottom: 126, left: 780, right: 808, width: 28, height: 26 });
     trigger.click();
     assert.equal(overlay.style.left, "612px", "clamped to the viewport margin");
+});
+
+
+test("native workspace navigation keeps item details and returns to the requested screen", describeDom, async () => {
+    const { window } = await boot({ homeWorkItems: [101] });
+    await openFromHome(window, 101);
+    window.document.querySelector('[data-workspace-view="items"]').click();
+    await settle();
+    assert.equal(window.document.querySelector('.workspace-heading').textContent, 'Work items');
+    assert.equal(window.document.querySelector('[data-workspace-view="items"]').getAttribute('aria-current'), 'page');
+    assert.deepEqual(titles(window), ['Home', 'Task 101']);
+    await clickTab(window, 1);
+    assert.equal(visiblePanels(window)[0].querySelector('.work-item-title').textContent, 'WI 101');
+});
+
+function editTitle(window, value) {
+    visiblePanels(window)[0].querySelector('.work-item-title-row .inline-edit').click();
+    const input = visiblePanels(window)[0].querySelector('.work-item-title-edit input');
+    input.value = value;
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    return input;
+}
+
+test("refresh preserves unsaved text and offers explicit conflict choices", describeDom, async () => {
+    const { window, state } = await boot({ homeWorkItems: [101] });
+    await openFromHome(window, 101);
+    const input = editTitle(window, 'My local title');
+    state.workItemsById = { 101: { rev: 2, title: 'Changed elsewhere' } };
+    window.document.getElementById('refreshButton').click();
+    await settle();
+    assert.equal(visiblePanels(window)[0].querySelector('.work-item-title-edit input'), input);
+    assert.equal(input.value, 'My local title');
+    assert.match(visiblePanels(window)[0].querySelector('.draft-notice').textContent, /Changed elsewhere/);
+    assert.equal(state.workItemUpdates, undefined);
+    [...visiblePanels(window)[0].querySelectorAll('.draft-notice button')].find(button => button.textContent === 'Apply choices').click();
+    visiblePanels(window)[0].querySelector('.editor-save').click();
+    await settle();
+    assert.equal(state.workItemUpdates[0].body.rev, 2);
+    assert.equal(visiblePanels(window)[0].querySelector('.work-item-title').textContent, 'My local title');
+});
+
+test("drafts and open views recover on a fresh browser origin without silently applying edits", describeDom, async () => {
+    const state = { homeWorkItems: [101] };
+    const first = await boot(state);
+    await openFromHome(first.window, 101);
+    editTitle(first.window, 'Recover this title');
+    await new Promise(resolve => setTimeout(resolve, 480));
+    assert.equal(state.drafts[101].fields[0].value, 'Recover this title');
+    assert.equal(state.preferences.activeItem.id, 101);
+    first.window.close();
+    const { window } = await boot(state);
+    assert.equal(activeTitle(window), 'Task 101');
+    assert.equal(visiblePanels(window)[0].querySelector('.work-item-title').textContent, 'WI 101');
+    const restore = [...visiblePanels(window)[0].querySelectorAll('button')].find(button => button.textContent === 'Restore draft');
+    assert.ok(restore);
+    restore.click();
+    assert.equal(visiblePanels(window)[0].querySelector('.work-item-title-edit input').value, 'Recover this title');
+    assert.equal(state.workItemUpdates, undefined);
+});
+
+test("saving fields preserves a separately composed discussion draft", describeDom, async () => {
+    const { window, state } = await boot({ homeWorkItems: [101] });
+    await openFromHome(window, 101);
+    editTitle(window, 'Updated title');
+    const composer = visiblePanels(window)[0].querySelector('.comment-composer-body');
+    composer.textContent = 'My unsent discussion';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
+    visiblePanels(window)[0].querySelector('.editor-save').click();
+    await settle();
+    assert.equal(visiblePanels(window)[0].querySelector('.comment-composer-body').textContent, 'My unsent discussion');
+    assert.equal(state.workItemComments, undefined);
+    await new Promise(resolve => setTimeout(resolve, 480));
+    assert.deepEqual(state.drafts[101].fields, []);
+    assert.equal(state.drafts[101].comment.content, 'My unsent discussion');
+});
+
+for (const laterTitle of ["A newer edit", "WI 101"]) {
+    test(`a held field save preserves text changed to ${laterTitle} after submission`, describeDom, async () => {
+        const gate = deferred();
+        const { window, state } = await boot({ homeWorkItems: [101], holdWorkItemUpdate: gate.promise });
+        await openFromHome(window, 101);
+        const input = editTitle(window, "Submitted title");
+        visiblePanels(window)[0].querySelector(".editor-save").click();
+        await settle();
+        assert.equal(state.workItemUpdates.length, 1);
+        input.value = laterTitle;
+        input.dispatchEvent(new window.Event("input", { bubbles: true }));
+        gate.resolve();
+        await settle();
+        assert.equal(visiblePanels(window)[0].querySelector(".work-item-title-edit input").value, laterTitle);
+        await new Promise(resolve => setTimeout(resolve, 480));
+        assert.equal(state.drafts[101].fields.find(field => field.name === "System.Title").value, laterTitle);
+        assert.equal(state.drafts[101].rev, 2);
+        state.holdWorkItemUpdate = null;
+        visiblePanels(window)[0].querySelector(".editor-save").click();
+        await settle();
+        assert.equal(state.workItemUpdates[1].body.rev, 2);
+        assert.equal(state.workItemUpdates[1].body.fields[0].value, laterTitle);
+        assert.equal(visiblePanels(window)[0].querySelector(".work-item-title").textContent, laterTitle);
+    });
+}
+
+test("a held comment submission preserves a field changed while the comment is posting", describeDom, async () => {
+    const gate = deferred();
+    const { window, state } = await boot({ homeWorkItems: [101], holdWorkItemComment: gate.promise });
+    await openFromHome(window, 101);
+    const input = editTitle(window, "First edit");
+    const composer = visiblePanels(window)[0].querySelector(".comment-composer-body");
+    composer.textContent = "Posted discussion";
+    composer.dispatchEvent(new window.Event("input", { bubbles: true }));
+    visiblePanels(window)[0].querySelector(".comment-submit").click();
+    await settle();
+    input.value = "Changed while posting";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    gate.resolve();
+    await settle();
+    assert.equal(visiblePanels(window)[0].querySelector(".work-item-title-edit input").value, "Changed while posting");
+    assert.equal(visiblePanels(window)[0].querySelector(".comment-composer-body").textContent, "");
+    assert.match(visiblePanels(window)[0].querySelector(".work-item-discussion").textContent, /Posted discussion/);
+    await new Promise(resolve => setTimeout(resolve, 480));
+    assert.equal(state.drafts[101].fields[0].value, "Changed while posting");
+    assert.equal(state.drafts[101].comment.content, "");
+    assert.equal(state.workItemUpdates, undefined);
+});
+
+for (const mutation of ["fields", "comment"]) {
+    test(`closing and discarding during a pending ${mutation} mutation cannot resurrect its draft`, describeDom, async () => {
+        const gate = deferred();
+        const { window, state } = await boot({ homeWorkItems: [101], [mutation === "fields" ? "holdWorkItemUpdate" : "holdWorkItemComment"]: gate.promise });
+        await openFromHome(window, 101);
+        editTitle(window, "Discard this edit");
+        if (mutation === "comment") {
+            const composer = visiblePanels(window)[0].querySelector(".comment-composer-body");
+            composer.textContent = "A pending comment";
+            composer.dispatchEvent(new window.Event("input", { bubbles: true }));
+        }
+        await new Promise(resolve => setTimeout(resolve, 480));
+        assert.ok(state.drafts[101]);
+        visiblePanels(window)[0].querySelector(mutation === "fields" ? ".editor-save" : ".comment-submit").click();
+        await settle();
+        let confirmed = 0;
+        window.confirm = () => { confirmed += 1; return true; };
+        await closeTab(window, 1);
+        assert.equal(confirmed, 1);
+        assert.deepEqual(titles(window), ["Home"]);
+        gate.resolve();
+        await new Promise(resolve => setTimeout(resolve, 480));
+        assert.equal(state.drafts[101], undefined);
+        assert.deepEqual(titles(window), ["Home"]);
+        await openFromHome(window, 101);
+        assert.doesNotMatch(visiblePanels(window)[0].textContent, /saved draft is available/);
+        assert.equal(visiblePanels(window)[0].querySelector(".work-item-title-edit"), null);
+    });
+}
+
+for (const choice of ["Restore draft", "Discard draft"]) {
+    test(`a pending saved draft blocks editing and comments until ${choice}`, describeDom, async () => {
+        const { window, state } = await boot({ homeWorkItems: [101], drafts: { 101: {
+            rev: 1, baseValues: { "System.Title": "WI 101" },
+            fields: [{ name: "System.Title", value: "Stored title", isHtml: false }],
+            comment: { content: "Stored comment", mentions: [] },
+        } } });
+        await openFromHome(window, 101);
+        const itemPanel = visiblePanels(window)[0];
+        assert.match(itemPanel.querySelector(".draft-notice").textContent, /Restore or discard it before editing or commenting/);
+        assert.equal(itemPanel.querySelector(".inline-edit, .editor-save, .comment-composer, .attachment-upload"), null);
+        [...itemPanel.querySelectorAll(".draft-notice button")].find(button => button.textContent === choice).click();
+        if (choice === "Restore draft") {
+            assert.equal(itemPanel.querySelector(".work-item-title-edit input").value, "Stored title");
+            assert.equal(itemPanel.querySelector(".comment-composer-body").textContent, "Stored comment");
+        } else {
+            assert.ok(itemPanel.querySelector(".work-item-title-row .inline-edit"));
+            assert.equal(itemPanel.querySelector(".comment-composer-body").textContent, "");
+            await new Promise(resolve => setTimeout(resolve, 480));
+            assert.equal(state.drafts[101], undefined);
+        }
+        assert.equal(state.workItemUpdates, undefined);
+        assert.equal(state.workItemComments, undefined);
+    });
+}
+
+test("an attachment-only revision change before editing advances the revision used by Save", describeDom, async () => {
+    const { window, state } = await boot({ homeWorkItems: [101] });
+    await openFromHome(window, 101);
+    const upload = visiblePanels(window)[0].querySelector(".work-item-attachments input[type=file]");
+    assert.ok(upload);
+    const file = new window.File(["image data"], "widget.png", { type: "image/png" });
+    Object.defineProperty(upload, "files", { value: [file] });
+    upload.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await settle();
+    assert.equal(state.attachments[0].file, file);
+    assert.match(state.attachments[0].path, /fileName=widget.png/);
+    assert.match(visiblePanels(window)[0].querySelector(".attachment-status").textContent, /Attached widget.png/);
+    editTitle(window, "Edited after upload");
+    visiblePanels(window)[0].querySelector(".editor-save").click();
+    await settle();
+    assert.equal(state.workItemUpdates[0].body.rev, 2);
+    assert.equal(visiblePanels(window)[0].querySelector(".work-item-title").textContent, "Edited after upload");
+    assert.doesNotMatch(visiblePanels(window)[0].querySelector(".draft-notice").textContent, /changed|conflict/i);
 });

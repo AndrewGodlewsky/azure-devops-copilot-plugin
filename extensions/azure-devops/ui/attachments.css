@@ -1,0 +1,13 @@
+.attachment-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border: 1px dashed var(--border-color-default, #d0d7de); border-radius: 6px; background: var(--background-color-default, #fff); }
+.attachment-upload.is-dragging { border-color: var(--text-color-link, #0969da); background: var(--background-color-neutral-muted, #f6f8fa); }
+.attachment-hint { color: var(--text-color-muted, #57606a); font-size: 12px; }
+.attachment-status { flex-basis: 100%; display: grid; gap: 6px; overflow-wrap: anywhere; font-size: 12px; }
+.attachment-status:empty { display: none; }
+.attachment-upload-result { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.attachment-upload-result.error { color: var(--text-color-danger, #cf222e); }
+.attachment-progress { width: 72px; height: 8px; flex: none; }
+.work-item-attachments > .attachment-upload { margin: 12px; }
+.comment-attachment { display: inline-block; max-width: 100%; vertical-align: middle; }
+.comment-attachment img, .editor-html img { max-width: 100%; height: auto; }
+.attachment-choose:focus-visible, .work-item-add-task:focus-visible { outline: 2px solid var(--text-color-link, #0969da); outline-offset: 2px; }
+@media (max-width: 480px) { .attachment-hint { flex-basis: 100%; } }

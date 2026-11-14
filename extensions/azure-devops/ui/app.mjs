@@ -2,6 +2,8 @@ import { renderWorkItem } from "./work-item-view.mjs";
 import { renderHome } from "./home-view.mjs";
 import { renderNavigation } from "./navigation-view.mjs";
 import { renderConnectionPanel } from "./connection-view.mjs";
+import { createWorkspaceView } from "./workspace-view.mjs";
+import { createDraftWriter, hasDraft, fieldValues, fieldsAfterSave } from "./draft-session.mjs";
 import { AGENCY_AUTH_ENABLED, normalizeFeatureFlags } from "../common.mjs";
 
 const startupSplash = document.getElementById("startupSplash");
@@ -43,6 +45,9 @@ let currentConfig;
 let homeLoaded = false;
 let logs = [];
 let enabledFeatures = normalizeFeatureFlags();
+let workspaceController, workspaceConnections = "", workspaceMode = "home";
+let restoringWorkspace = true, preferencesTimer, preferencesWrite = Promise.resolve();
+let backgroundRefreshPending = false;
 
 // Each sidebar item keeps an independent detail view and can be closed
 // independently. A tab is { id, entry, panel, content, data, rendered, token,
@@ -165,7 +170,10 @@ async function request(path, options = {}, includeNonce = true) {
                 showSignInSplash();
             }
         }
-        throw new Error(data.message || data.error || "Request failed.");
+        const error = new Error(data.message || data.error || "Request failed.");
+        error.code = data.error;
+        error.status = response.status;
+        throw error;
     }
     return data;
 }
@@ -312,10 +320,13 @@ function renderTabBar({ revealActive = false } = {}) {
     renderNavigation(viewTabs, {
         tabs, activeTabId, collapsed: collapsedNavigationItems, sameEntry, tabTitle,
         revealActive,
-        onActivate: activateTab,
+        workspace: { view: activeTab()?.entry.view === "home" ? workspaceMode : "", onShow: showWorkspace,
+            onCreate: () => ensureWorkspace().openCreate() },
+        onActivate: (id) => tabs.find(tab => tab.id === id)?.entry.view === "home" ? showWorkspace("home") : activateTab(id),
         onOpenChild: openWorkItem,
         onClose: closeTab,
     });
+    saveOpenViews();
 }
 
 function setNavigationCollapsed(collapsed) {
@@ -412,6 +423,8 @@ function closeTab(id) {
         return;
     }
     const [closed] = tabs.splice(index, 1);
+    if (closed.dirty) discardDraft(closed);
+    closed.draftWriter?.flush().catch(() => {});
     releaseBoardTab(closed);
     // Invalidates any load still in flight for this tab, so it cannot render into
     // a detached panel or report success for something the user closed.
@@ -767,6 +780,13 @@ async function signOut() {
     }
     signOutButton.disabled = true;
     try {
+        window.clearTimeout(preferencesTimer);
+        await preferencesWrite.catch(() => {});
+        for (const tab of tabs) {
+            if (tab.dirty) discardDraft(tab);
+            await tab.draftWriter?.flush().catch(() => {});
+            tab.draftWriter?.stop();
+        }
         const data = await request("/api/auth/sign-out", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
         renderAuthOutput(data.authProcess);
         addLog("trace", "Signed out and cleared local preferences.");
@@ -780,14 +800,33 @@ async function signOut() {
 }
 
 function renderWorkItemTab(tab) {
-    renderWorkItem(tab.content, tab.data, {
+    const generation = tab.viewGeneration = (tab.viewGeneration || 0) + 1;
+    const currentView = () => tabs.includes(tab) && generation === tab.viewGeneration;
+    tab.view = renderWorkItem(tab.content, tab.data, {
         avatarUrl: profileImageUrl,
         imageUrl: (url) => attachmentImageUrl(url, tabEntry(tab)),
         onOpenWorkItem: (item) => openWorkItem(item, tabEntry(tab)),
-        canEdit: true,
+        canEdit: !tab.storedDraft,
         editMode: tab.editMode,
+        draft: tab.localDraft,
+        onDraftChange: (draft) => { if (currentView()) updateDraft(tab, draft); },
+        onAddTask: () => ensureWorkspace().openCreate({ connection: tabEntry(tab), parent: tab.data }),
+        onUploadAttachment: tab.storedDraft ? null : async (file) => {
+            if (tab.busy) throw new Error("Wait for the current save to finish before uploading.");
+            tab.pendingUploads = (tab.pendingUploads || 0) + 1;
+            renderDraftNotice(tab);
+            try {
+                const result = await request(`/api/work-items/${tab.data.id}/attachments${connectionQuery(tabEntry(tab), {
+                    workItemProject: tab.data.project, fileName: file.name,
+                })}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+                // The attachment changes the revision; fetch details to detect any concurrent field edit.
+                await checkWorkItemUpdates(tab).catch(error => addLog("error", "Attachment saved, but item details could not refresh.", error.message));
+                return result;
+            } finally { tab.pendingUploads -= 1; renderDraftNotice(tab); }
+        },
         onDirtyChange: (dirty) => {
-            tab.dirty = dirty;
+            if (!currentView()) return;
+            tab.dirty = dirty || hasDraft({ comment: tab.commentDraft });
         },
         onEdit: () => setEditMode(tab, true, renderWorkItemTab),
         onCancelEdit: () => setEditMode(tab, false, renderWorkItemTab),
@@ -795,9 +834,10 @@ function renderWorkItemTab(tab) {
         // the user would otherwise click and inherits its busy and error handling.
         onSubmit: () => tab.content.querySelector(".editor-save")?.click(),
         onSave: (fields) => saveWorkItemFields(tab, fields),
-        onAddComment: (content) => postWorkItemComment(tab, content),
+        onAddComment: tab.storedDraft ? null : (content) => postWorkItemComment(tab, content),
         commentDraft: tab.commentDraft,
         onCommentDraftChange: (draft) => {
+            if (!currentView()) return;
             tab.commentDraft = draft.content ? draft : null;
         },
         onSearchIdentities: (query) => request(
@@ -808,6 +848,213 @@ function renderWorkItemTab(tab) {
         delegationStatus: tab.delegationStatus,
         delegationError: tab.delegationError,
     });
+    renderDraftNotice(tab);
+}
+
+function draftPath(tab) {
+    return `/api/work-items/${tab.data.id}/draft${connectionQuery(tab.entry, { workItemProject: tab.data.project })}`;
+}
+
+function updateDraft(tab, draft) {
+    tab.localDraft = draft;
+    tab.commentDraft = draft.comment?.content ? draft.comment : null;
+    tab.dirty = hasDraft(draft);
+    if (!tab.baseRev || !draft.fields?.length) {
+        tab.baseRev = tab.data.rev;
+        tab.baseValues = fieldValues(tab.data);
+    }
+    if (!tab.draftWriter) {
+        tab.draftWriter = createDraftWriter({
+            schedule: window.setTimeout.bind(window), cancel: window.clearTimeout.bind(window),
+            write: value => request(draftPath(tab), {
+                method: value ? "PUT" : "DELETE",
+                headers: { "Content-Type": "application/json" },
+                ...(value ? { body: JSON.stringify(value) } : {}),
+            }),
+            onStatus: status => { tab.draftStatus = status; renderDraftNotice(tab); },
+        });
+    }
+    tab.draftWriter.set(tab.dirty ? { ...draft, rev: tab.baseRev, baseValues: tab.baseValues } : null);
+}
+
+function discardDraft(tab) {
+    if (!tab.data) return;
+    tab.storedDraft = null;
+    tab.latest = null;
+    tab.baseRev = tab.data.rev;
+    tab.baseValues = fieldValues(tab.data);
+    updateDraft(tab, { fields: [], comment: { content: "", mentions: [] } });
+}
+
+function renderDraftNotice(tab) {
+    if (!tabs.includes(tab)) return;
+    if (!tab.draftNotice) {
+        tab.draftNotice = element("div", "draft-notice");
+        tab.draftNotice.setAttribute("aria-label", "Draft status");
+        tab.panel.prepend(tab.draftNotice);
+    }
+    const notice = tab.draftNotice;
+    for (const button of notice.querySelectorAll("button")) button.disabled = Boolean(tab.busy || tab.pendingUploads);
+    // Do not replace a conflict selector the user is currently choosing.
+    if (notice.contains(document.activeElement) && document.activeElement.matches(".draft-conflict select") && tab.latest) return;
+    notice.replaceChildren();
+    const action = (text, run) => {
+        const button = element("button", "secondary", text);
+        button.type = "button";
+        button.disabled = Boolean(tab.busy || tab.pendingUploads);
+        button.addEventListener("click", () => { if (!tab.busy && !tab.pendingUploads) run(); });
+        return button;
+    };
+    if (tab.storedDraft) {
+        notice.append(element("span", "", "A saved draft is available on this device. Restore or discard it before editing or commenting."));
+        const actions = element("div", "draft-actions");
+        actions.append(action("Restore draft", () => {
+            const draft = tab.storedDraft;
+            tab.storedDraft = null;
+            tab.baseRev = draft.rev;
+            tab.baseValues = draft.baseValues || {};
+            tab.editMode = Boolean(draft.fields?.length);
+            updateDraft(tab, { fields: draft.fields || [], comment: typeof draft.comment === "string"
+                ? { content: draft.comment, mentions: [] } : draft.comment || { content: "", mentions: [] } });
+            if (tab.baseRev !== tab.data.rev && draft.fields?.length) tab.latest = tab.data;
+            renderWorkItemTab(tab);
+        }), action("Discard draft", () => { discardDraft(tab); renderWorkItemTab(tab); }));
+        notice.append(actions);
+    }
+    if (tab.latest && !tab.localDraft?.fields?.length) {
+        notice.append(element("strong", "", "This item changed in Azure DevOps."), action("Load latest version", () => {
+            tab.data = tab.latest; tab.latest = null;
+            tab.baseRev = tab.data.rev; tab.baseValues = fieldValues(tab.data);
+            renderWorkItemTab(tab);
+        }));
+    } else if (tab.latest && tab.localDraft?.fields?.length) {
+        notice.append(element("strong", "", "This item changed in Azure DevOps. Review your edits before saving."));
+        const current = fieldValues(tab.latest);
+        const reviewedRevision = tab.latest.rev;
+        const choices = [];
+        for (const field of tab.localDraft.fields) {
+            const row = element("label", "draft-conflict");
+            row.append(element("strong", "", field.name),
+                element("p", "", `Current: ${current[field.name] ?? ""}`),
+                element("p", "", `Your edit: ${field.value ?? ""}`));
+            const choice = element("select");
+            choice.setAttribute("aria-label", `Resolve ${field.name}`);
+            for (const [value, label] of [["mine", "Keep my edit"], ["current", "Use current value"]]) {
+                const option = element("option", "", label); option.value = value; choice.append(option);
+            }
+            choices.push({ field, choice });
+            row.append(choice); notice.append(row);
+        }
+        notice.append(action("Apply choices", () => {
+            if (tab.latest.rev !== reviewedRevision) { renderDraftNotice(tab); return; }
+            const decisions = new Map(choices.map(({ field, choice }) => [field.name, choice.value]));
+            const currentValues = fieldValues(tab.latest);
+            const fields = tab.localDraft.fields.filter(field => decisions.get(field.name) !== "current" &&
+                String(field.value ?? "") !== String(currentValues[field.name] ?? ""));
+            tab.data = tab.latest; tab.latest = null;
+            tab.baseRev = tab.data.rev; tab.baseValues = currentValues;
+            updateDraft(tab, { fields, comment: tab.localDraft.comment });
+            renderWorkItemTab(tab);
+        }));
+    }
+    if (tab.draftStatus) {
+        const status = element("span", "status", tab.draftStatus);
+        status.setAttribute("role", "status"); notice.append(status);
+        if (tab.draftStatus.startsWith("Draft not saved")) notice.append(action("Retry draft save", () => tab.draftWriter.flush().catch(() => {})));
+    }
+}
+
+async function checkWorkItemUpdates(tab) {
+    if (!tab.data || !tabs.includes(tab)) return;
+    const updateToken = tab.updateToken = (tab.updateToken || 0) + 1;
+    const data = await request(`/api/work-items/${tab.data.id}/details${connectionQuery(tab.entry, { workItemProject: tab.data.project })}`);
+    if (!tabs.includes(tab) || updateToken !== tab.updateToken || data.workItem.rev <= tab.data.rev) return;
+    const draft = tab.view?.getDraft() || tab.localDraft;
+    if (hasDraft(draft) || tab.editMode || tab.busy || tab.pendingUploads) {
+        tab.localDraft = draft;
+        const latestValues = fieldValues(data.workItem);
+        const originalValues = tab.baseValues || fieldValues(tab.data);
+        const changed = new Set([...Object.keys(latestValues), ...Object.keys(originalValues)]);
+        const collision = tab.editMode && [...changed].some(name => String(latestValues[name] ?? "") !== String(originalValues[name] ?? ""));
+        if (collision) tab.latest = data.workItem;
+        else {
+            tab.data = data.workItem;
+            tab.baseRev = data.workItem.rev;
+            tab.baseValues = latestValues;
+            if (hasDraft(draft)) updateDraft(tab, draft);
+        }
+        renderDraftNotice(tab);
+    } else if (!tab.content.contains(document.activeElement)) {
+        tab.data = data.workItem;
+        renderWorkItemTab(tab);
+        renderTabBar();
+    }
+}
+
+function ensureWorkspace() {
+    const connections = currentConfig?.connections || [];
+    const key = JSON.stringify(connections);
+    if (!workspaceController || workspaceConnections !== key) {
+        workspaceController?.destroy();
+        workspaceConnections = key;
+        workspaceController = createWorkspaceView(homeContent, {
+            request, connections,
+            onOpenWorkItem: openHomeWorkItem,
+            onCreated: async (item, connection, parent) => {
+                if (parent) {
+                    const parentTab = tabs.find(tab => sameEntry(tab.entry, entryForConnection("work-item", parent.id, connection, { workItemProject: parent.project })));
+                    if (parentTab) await checkWorkItemUpdates(parentTab).catch(error => addLog("error", "Could not refresh parent.", error.message));
+                }
+                homeLoaded = false;
+                await openHomeWorkItem(item, connection);
+            },
+            onChange: () => { for (const tab of tabs) if (tab.data && tab.entry.view === "work-item") checkWorkItemUpdates(tab).catch(() => {}); },
+            onViewChange: view => { workspaceMode = view; renderTabBar(); },
+        });
+    }
+    return workspaceController;
+}
+
+async function showWorkspace(view) {
+    workspaceMode = view;
+    const home = tabs.find(tab => tab.entry.view === "home");
+    if (!home) return;
+    if (activeTab()) activeTab().scrollTop = window.scrollY;
+    activeTabId = home.id;
+    showActivePanel(); renderTabBar();
+    await ensureWorkspace().show(view);
+    homeLoaded = true;
+    if (activeTabId === home.id) window.scrollTo(0, home.scrollTop || 0);
+}
+
+function saveOpenViews() {
+    if (restoringWorkspace || !currentConfig?.auth?.isAuthenticated) return;
+    window.clearTimeout(preferencesTimer);
+    const preferences = {
+        openItems: tabs.filter(tab => tab.entry.view === "work-item" && tab.entry.id > 0).map(tab => ({ ...tab.entry, current: false })),
+        activeItem: activeTab()?.entry.view === "work-item" ? { ...activeTab().entry, current: false } : null,
+    };
+    preferencesTimer = window.setTimeout(() => {
+        preferencesWrite = preferencesWrite.catch(() => {}).then(() => request("/api/workspace/preferences", {
+            method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(preferences),
+        })).catch(error => addLog("error", "Could not save open views.", error.message));
+    }, 400);
+}
+
+async function restoreOpenViews() {
+    try {
+        const { preferences = {} } = await request("/api/workspace/preferences");
+        workspaceMode = ["home", "items", "board"].includes(preferences.workspace?.view) ? preferences.workspace.view : "home";
+        for (const entry of (preferences.openItems || []).slice(0, 50)) {
+            if (entry.view !== "work-item" || !Number.isInteger(entry.id) || entry.id <= 0) continue;
+            const connection = currentConfig.connections.find(c => (c.organization || "").toLowerCase() === (entry.organization || "").toLowerCase() &&
+                (c.project || "").toLowerCase() === (entry.project || "").toLowerCase());
+            if (!connection || tabs.some(tab => sameEntry(tab.entry, entry))) continue;
+            const tab = createTab(entryForConnection("work-item", entry.id, connection, { workItemProject: entry.workItemProject || "" }));
+            if (sameEntry(entry, preferences.activeItem)) activeTabId = tab.id;
+        }
+    } catch (error) { addLog("error", "Could not restore open views.", error.message); }
+    finally { restoringWorkspace = false; }
 }
 
 function sourceBoardTab(tab) {
@@ -1136,6 +1383,7 @@ async function delegateBoardWorkItem(mode) {
 }
 
 async function delegateWorkItemTab(tab, mode) {
+    if (tab.busy || tab.pendingUploads) return;
     const boardTab = sourceBoardTab(tab);
     if (tab.delegationPending) return;
     tab.delegationPending = true;
@@ -1197,58 +1445,108 @@ function sendWorkItemDelegation(tab, mode, force = false) {
 }
 
 async function postWorkItemComment(tab, content) {
+    if (tab.busy || tab.pendingUploads) throw new Error("Wait for the current save or upload to finish before posting.");
     const entry = tabEntry(tab);
-    const data = await request(
-        `/api/work-items/${encodeURIComponent(tab.data.id)}/comments${connectionQuery(entry, { workItemProject: tab.data.project })}`,
-        {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content }),
-        },
-    );
-    tab.data = data.workItem;
-    tab.commentDraft = null;
-    renderWorkItemTab(tab);
-    renderTabBar();
-    addLog("trace", "Added a work item comment.", `Work item #${tab.data.id}`);
+    const submitted = tab.view?.getDraft() || tab.localDraft;
+    const generation = tab.viewGeneration;
+    tab.busy = true;
+    try {
+        const data = await request(
+            `/api/work-items/${encodeURIComponent(tab.data.id)}/comments${connectionQuery(entry, { workItemProject: tab.data.project })}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content }),
+            },
+        );
+        if (!tabs.includes(tab) || generation !== tab.viewGeneration) return;
+        const draft = tab.view?.getDraft() || tab.localDraft;
+        tab.data = data.workItem;
+        const comment = JSON.stringify(draft?.comment) === JSON.stringify(submitted?.comment)
+            ? { content: "", mentions: [] } : draft?.comment || { content: "", mentions: [] };
+        const latestValues = fieldValues(tab.data);
+        const originalValues = tab.baseValues || {};
+        const changed = [...new Set([...Object.keys(latestValues), ...Object.keys(originalValues)])]
+            .some(name => String(latestValues[name] ?? "") !== String(originalValues[name] ?? ""));
+        if (draft?.fields?.length && changed) tab.latest = tab.data;
+        else { tab.baseRev = tab.data.rev; tab.baseValues = latestValues; }
+        updateDraft(tab, { fields: draft?.fields || [], comment });
+        renderWorkItemTab(tab);
+        renderTabBar();
+        addLog("trace", "Added a work item comment.", `Work item #${tab.data.id}`);
+    } finally { tab.busy = false; renderDraftNotice(tab); }
 }
 
 // Entering or leaving edit mode re-renders the whole detail view, so unsaved work
 // is confirmed first.
 function setEditMode(tab, editMode, render) {
+    if (tab.busy || tab.pendingUploads) return;
+    if (editMode && tab.storedDraft) { renderDraftNotice(tab); return; }
     if (tab.editMode === editMode || (!editMode && !confirmDiscard([tab]))) {
         return;
     }
+    const draft = tab.view?.getDraft() || tab.localDraft;
+    if (!editMode) {
+        if (tab.latest) tab.data = tab.latest;
+        tab.latest = null;
+        tab.baseRev = tab.data.rev;
+        tab.baseValues = fieldValues(tab.data);
+        updateDraft(tab, { fields: [], comment: draft?.comment || { content: "", mentions: [] } });
+    } else {
+        tab.baseRev = tab.data.rev;
+        tab.baseValues = fieldValues(tab.data);
+        tab.localDraft = draft;
+    }
     tab.editMode = editMode;
-    tab.dirty = false;
+    tab.dirty = hasDraft(tab.localDraft);
     render(tab);
 }
 
 async function saveWorkItemFields(tab, fields) {
+    if (tab.busy || tab.pendingUploads) throw new Error("Wait for the current save or upload to finish before saving.");
+    if (tab.latest) throw new Error("Review the changed values above and apply your choices before saving.");
     // Nothing was touched, so there is nothing to write; leaving edit mode is the
     // whole of the save.
     if (!fields.length) {
         tab.editMode = false;
-        tab.dirty = false;
+        updateDraft(tab, { fields: [], comment: tab.localDraft?.comment || { content: "", mentions: [] } });
         renderWorkItemTab(tab);
         return;
     }
     const entry = tabEntry(tab);
-    const data = await request(`/api/work-items/${encodeURIComponent(tab.data.id)}${connectionQuery(entry, { workItemProject: tab.data.project })}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        // Every changed field goes in one patch, so the revision test covers the
-        // whole edit rather than each field racing separately.
-        body: JSON.stringify({ rev: tab.data.rev, fields }),
-    });
-    tab.data = data.workItem;
-    tab.editMode = false;
-    tab.dirty = false;
-    // tab.rendered marks which entry the tab shows, which a save does not change;
-    // the refreshed payload replaces the cached one in tab.data instead.
-    renderWorkItemTab(tab);
-    renderTabBar();
-    addLog("trace", "Saved work item changes.", `${data.workItem.type} ${data.workItem.id}: ${fields.map((field) => field.name).join(", ")}`);
+    const generation = tab.viewGeneration;
+    const submitted = tab.view?.getDraft() || tab.localDraft;
+    const original = tab.baseValues || fieldValues(tab.data);
+    tab.busy = true;
+    try {
+        const data = await request(`/api/work-items/${encodeURIComponent(tab.data.id)}${connectionQuery(entry, { workItemProject: tab.data.project })}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            // Every changed field goes in one patch, so the revision test covers the
+            // whole edit rather than each field racing separately.
+            body: JSON.stringify({ rev: tab.baseRev || tab.data.rev, fields }),
+        });
+        if (!tabs.includes(tab) || generation !== tab.viewGeneration) return;
+        const current = tab.view?.getDraft() || tab.localDraft;
+        const remaining = fieldsAfterSave(submitted?.fields, current?.fields, original, new Set(fields.map(field => field.name)));
+        tab.data = data.workItem;
+        tab.editMode = remaining.length > 0;
+        tab.baseRev = tab.data.rev;
+        tab.baseValues = fieldValues(tab.data);
+        updateDraft(tab, { fields: remaining, comment: current?.comment || { content: "", mentions: [] } });
+        // tab.rendered marks which entry the tab shows, which a save does not change;
+        // the refreshed payload replaces the cached one in tab.data instead.
+        renderWorkItemTab(tab);
+        renderTabBar();
+        addLog("trace", "Saved work item changes.", `${data.workItem.type} ${data.workItem.id}: ${fields.map((field) => field.name).join(", ")}`);
+    } catch (error) {
+        if (!tabs.includes(tab) || generation !== tab.viewGeneration) return;
+        if (error.code === "azure_devops_work_item_out_of_date") {
+            await checkWorkItemUpdates(tab);
+            throw new Error("This item changed. Review the current values above, then save again.");
+        }
+        throw error;
+    } finally { tab.busy = false; renderDraftNotice(tab); }
 }
 
 function loadedWorkItemTab(tab, workItem, entry) {
@@ -1264,6 +1562,9 @@ function loadedWorkItemTab(tab, workItem, entry) {
         : { ...entry, view: "work-item", id: Number(workItem.id) || 0 };
     tab.editMode = false;
     tab.dirty = false;
+    tab.localDraft = null;
+    tab.baseRev = workItem.rev;
+    tab.baseValues = fieldValues(workItem);
     renderWorkItemTab(tab);
 }
 
@@ -1280,6 +1581,12 @@ async function loadWorkItemIntoTab(tab, entry, token) {
             : `/api/work-items/${encodeURIComponent(id)}/details${connectionQuery(entry, { workItemProject: entry.workItemProject })}`);
         if (token !== tab.token) {
             return;
+        }
+        if (!tab.draftLoaded) {
+            const saved = await request(`/api/work-items/${data.workItem.id}/draft${connectionQuery(entry, { workItemProject: data.workItem.project })}`);
+            if (token !== tab.token) return;
+            tab.storedDraft = hasDraft(saved.draft) ? saved.draft : null;
+            tab.draftLoaded = true;
         }
         loadedWorkItemTab(tab, data.workItem, entry);
         addLog("trace", "Loaded work item details.", `${data.workItem.type} ${data.workItem.id}: ${data.workItem.title}`);
@@ -1359,6 +1666,11 @@ async function delegateHomeWorkItem(item, connection = null, force = false) {
 }
 
 async function loadHome() {
+    await ensureWorkspace().show(workspaceMode);
+    homeLoaded = true;
+}
+
+async function loadLegacyHome() {
     if (!homeContent.querySelector(".home-loading-state")) {
         showLoading(
             homeContent,
@@ -1420,7 +1732,10 @@ function defaultEntryConnection() {
 }
 
 function resetTabs() {
+    workspaceController?.destroy();
+    workspaceController = null;
     for (const tab of tabs) {
+        tab.draftWriter?.flush().catch(() => {});
         releaseBoardTab(tab);
         if (tab.panel !== homePanel) {
             tab.panel.remove();
@@ -1646,6 +1961,12 @@ async function refresh() {
     if (!confirmDiscard(tabs)) {
         return;
     }
+    for (const tab of tabs) {
+        if (tab.dirty) discardDraft(tab);
+        await tab.draftWriter?.flush().catch(() => {});
+    }
+    restoringWorkspace = true;
+    window.clearTimeout(preferencesTimer);
     refreshButton.disabled = true;
     addLog("trace", "Refreshing canvas.");
     showStartupLoading("Preparing Azure DevOps", "Checking connection and sign-in.");
@@ -1693,10 +2014,13 @@ async function refresh() {
             // have a stable place to return to.
             // The id lives in the canvas input, so the server resolves it.
             await openEntry({ ...entryForConnection("work-item", 0, defaultEntryConnection()), current: true });
+            restoringWorkspace = false;
+            renderTabBar();
             return;
         }
-
-        await loadHome();
+        await restoreOpenViews();
+        renderTabBar(); showActivePanel();
+        await applyTab(activeTab());
     } catch (error) {
         addLog("error", "Canvas refresh failed.", error.message || "");
         showCanvas();
@@ -1712,9 +2036,7 @@ async function refreshActiveTab() {
     if (!tab) {
         return refresh();
     }
-    if (!confirmDiscard([tab])) {
-        return;
-    }
+    if (tab.busy || tab.pendingUploads) return;
     refreshButton.disabled = true;
     addLog("trace", `Refreshing ${tabTitle(tab)}.`);
     try {
@@ -1727,26 +2049,51 @@ async function refreshActiveTab() {
         showCanvas();
         const entry = tabEntry(tab);
         if (entry.view === "home") {
-            homeLoaded = false;
-            await loadHome();
+            if (workspaceController) await workspaceController.refresh();
+            else await loadHome();
             return;
         }
         tab.token += 1;
         const token = tab.token;
         if (entry.view === "board") {
+            if (!confirmDiscard([tab])) return;
             await loadBoardIntoTab(tab, token);
         } else {
-            await loadWorkItemIntoTab(tab, entry, token);
+            if (tab.data) await checkWorkItemUpdates(tab);
+            else await loadWorkItemIntoTab(tab, entry, token);
         }
         renderTabBar();
         showActivePanel();
     } catch (error) {
         addLog("error", `Failed to refresh ${tabTitle(tab)}.`, error.message || "");
-        showStatus(tab.content, error.message || `Failed to refresh ${tabTitle(tab)}.`, refreshActiveTab);
+        if (tab.dirty || tab.editMode) {
+            tab.draftStatus = `Refresh failed: ${error.message}`; renderDraftNotice(tab);
+        } else showStatus(tab.content, error.message || `Failed to refresh ${tabTitle(tab)}.`, refreshActiveTab);
     } finally {
         refreshButton.disabled = false;
     }
 }
+
+async function backgroundRefresh() {
+    if (backgroundRefreshPending || document.hidden || canvasContent.hidden || connectionState || !currentConfig?.auth?.isAuthenticated) return;
+    const tab = activeTab();
+    if (!tab || tab.busy || tab.pendingUploads) return;
+    backgroundRefreshPending = true;
+    try {
+        if (tab.entry.view === "home" && workspaceController) await workspaceController.refresh({ background: true });
+        else if (tab.entry.view === "work-item") await checkWorkItemUpdates(tab);
+    } catch (error) { addLog("error", "Background refresh failed; existing work is preserved.", error.message); }
+    finally { backgroundRefreshPending = false; }
+}
+window.setInterval(backgroundRefresh, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) backgroundRefresh(); });
+window.addEventListener("pagehide", () => { for (const tab of tabs) tab.draftWriter?.flush().catch(() => {}); });
+window.addEventListener("beforeunload", event => {
+    if (tabs.some(tab => tab.draftStatus?.startsWith("Saving") || tab.draftStatus?.startsWith("Draft not saved"))) {
+        for (const tab of tabs) tab.draftWriter?.flush().catch(() => {});
+        event.preventDefault(); event.returnValue = "";
+    }
+});
 
 showLogsButton.addEventListener("click", () => {
     logsPanel.hidden = !logsPanel.hidden;
