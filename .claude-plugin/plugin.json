@@ -1,7 +1,7 @@
 {
   "name": "andrewgodlewsky-azure-devops",
   "description": "Andrew Godlewsky's fork of the Azure DevOps canvas for work items, repositories, and pull requests in GitHub Copilot.",
-  "version": "0.1.72",
+  "version": "0.1.73",
   "author": {
     "name": "Andrew Godlewsky",
     "url": "https://github.com/AndrewGodlewsky"
