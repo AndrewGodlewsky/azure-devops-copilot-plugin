@@ -1866,9 +1866,9 @@ test("switching tabs preserves what each tab already rendered", describeDom, asy
     assert.equal(visiblePanels(window).length, 1, "each tab keeps its own panel across switches");
 });
 
-test("following a link inside a work item opens it in its own tab", describeDom, async () => {
+test("opening a child task from the main work-item section preserves the parent tab", describeDom, async () => {
     const relations = [{
-        name: "Child",
+        name: "Children",
         links: [{ id: 501, project: "Other Project", label: "Task 501", title: "Related", state: "Active" }],
     }];
     const { window, state } = await boot({ homeWorkItems: [400], relations });
@@ -1876,7 +1876,7 @@ test("following a link inside a work item opens it in its own tab", describeDom,
     await openFromHome(window, "400");
     assert.equal(activeTitle(window), "Task 400");
 
-    const related = [...window.document.querySelectorAll(".tab-panel button")]
+    const related = [...window.document.querySelectorAll(".tab-panel .work-item-main-column .child-work-section button")]
         .find((node) => node.textContent.includes("501"));
     assert.ok(related, "the related work item should be clickable");
     related.click();

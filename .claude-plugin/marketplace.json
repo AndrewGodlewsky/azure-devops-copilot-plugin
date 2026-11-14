@@ -2,7 +2,7 @@
   "name": "andrewgodlewsky-plugins",
   "metadata": {
     "description": "Andrew Godlewsky's plugin marketplace for GitHub Copilot.",
-    "version": "0.1.71"
+    "version": "0.1.72"
   },
   "owner": {
     "name": "Andrew Godlewsky"
@@ -12,7 +12,7 @@
       "name": "andrewgodlewsky-azure-devops",
       "source": "./",
       "description": "Andrew Godlewsky's fork of the Azure DevOps canvas for work items, repositories, and pull requests in GitHub Copilot.",
-      "version": "0.1.71",
+      "version": "0.1.72",
       "author": {
         "name": "Andrew Godlewsky",
         "url": "https://github.com/AndrewGodlewsky"

@@ -294,8 +294,10 @@ a { color: var(--text-color-link, #0969da); }
 .relation-icon-pull-request, .relation-icon-branch, .relation-icon-commit, .relation-icon-build { color: var(--text-color-accent, #0969da); }
 .relation-row-content { min-width: 0; }
 .relation-kind { margin-bottom: 2px; color: var(--text-color-muted, #57606a); font-size: 11px; font-weight: var(--font-weight-semibold, 600); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.work-item-sidebar .relation-link { display: block; width: 100%; min-height: 0; max-width: 100%; padding: 0; border: 0; color: var(--text-color-link, #0969da); background: transparent; text-align: left; font: inherit; font-size: var(--text-body-small, 12px); line-height: var(--leading-body-small, 18px); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.work-item-sidebar .relation-link:hover { text-decoration: underline; }
+.work-item-sidebar .relation-link, .child-work-section .relation-link { display: block; width: 100%; min-height: 0; max-width: 100%; padding: 0; border: 0; color: var(--text-color-link, #0969da); background: transparent; text-align: left; font: inherit; font-size: var(--text-body-small, 12px); line-height: var(--leading-body-small, 18px); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-item-sidebar .relation-link:hover, .child-work-section .relation-link:hover { text-decoration: underline; }
+.child-work-section .relation-row { padding: 12px 16px; }
+.child-work-section .relation-link { font-size: var(--text-body-medium, 14px); line-height: var(--leading-body-medium, 20px); white-space: normal; overflow-wrap: anywhere; }
 .relation-reference { font-weight: var(--font-weight-semibold, 600); }
 .relation-title { min-width: 0; font-weight: var(--font-weight-normal, 400); }
 .relation-meta { margin-top: 2px; color: var(--text-color-muted, #57606a); font-size: 11px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

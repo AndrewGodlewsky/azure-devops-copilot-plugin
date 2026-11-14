@@ -162,16 +162,16 @@ function relationRow(entry, groupName, onOpenWorkItem, onOpenPullRequest, develo
     return row;
 }
 
-function relationsSection(title, groups, onOpenWorkItem, { development = false, onOpenPullRequest } = {}) {
+function relationsSection(title, groups, onOpenWorkItem, { development = false, children = false, onOpenPullRequest } = {}) {
     const entries = groups.flatMap((group) =>
         (group.links || []).map((entry) => ({ entry, groupName: group.name })));
     if (!entries.length) {
         return null;
     }
-    const card = element(
-        "section",
-        `work-item-card work-item-sidebar-card ${development ? "development-section" : "related-work-section"}`,
-    );
+    const className = children
+        ? "child-work-section"
+        : `work-item-sidebar-card ${development ? "development-section" : "related-work-section"}`;
+    const card = element("section", `work-item-card ${className}`);
     const header = element("div", "work-item-card-header");
     header.append(
         element("h2", "work-item-card-title section-title", title),
@@ -642,11 +642,19 @@ export function renderWorkItem(container, item, options = {}) {
         mainColumn.append(templateSection(item, section, options, fields));
     }
 
+    const children = relationsSection(
+        "Tasks and child work items",
+        (item.relations || []).filter((group) => group.name === "Children"),
+        options.onOpenWorkItem,
+        { children: true },
+    );
+    if (children) mainColumn.append(children);
+
     mainColumn.append(discussionSection(item, options));
     body.append(mainColumn);
 
     const developmentGroups = (item.relations || []).filter((group) => group.name === "Development");
-    const relatedGroups = (item.relations || []).filter((group) => group.name !== "Development");
+    const relatedGroups = (item.relations || []).filter((group) => group.name !== "Development" && group.name !== "Children");
     const sidebar = element("aside", "work-item-sidebar");
     const development = relationsSection(
         "Development",

@@ -58,6 +58,74 @@ const descriptionSection = {
     fields: [{ name: "Description", field: "System.Description", isHtml: true, value: "<p>Body</p>" }],
 };
 
+test("child tasks appear in the main column without duplicating sidebar relations", needsDom, () => {
+    const children = [
+        { id: 51, kind: "work-item", label: "Task 51", title: "Build the widget", state: "To Do" },
+        { id: 52, kind: "work-item", label: "Task 52", title: "Check the widget", state: "Done" },
+    ];
+    const host = render(workItem({
+        type: "Issue",
+        templateSections: [descriptionSection],
+        relations: [
+            { name: "Children", links: children },
+            { name: "Parent", links: [{ id: 10, label: "Epic 10", title: "Parent epic" }] },
+            { name: "Related", links: [{ id: 20, label: "Issue 20", title: "Another issue" }] },
+        ],
+    }), { onOpenWorkItem() {} });
+
+    const card = host.querySelector(".work-item-main-column .child-work-section");
+    assert.ok(card, "child tasks should have a prominent main-column section");
+    assert.equal(card.querySelector("h2").textContent, "Tasks and child work items");
+    assert.equal(card.querySelector(".primer-counter").textContent, "2");
+    assert.deepEqual([...card.querySelectorAll(".relation-title")].map((node) => node.textContent), children.map((child) => child.title));
+    assert.match(card.textContent, /To Do/);
+    assert.match(card.textContent, /Done/);
+    assert.ok(card.previousElementSibling.classList.contains("template-section"));
+    assert.ok(card.nextElementSibling.classList.contains("work-item-discussion"));
+    assert.doesNotMatch(host.querySelector(".work-item-sidebar").textContent, /Build the widget|Check the widget/);
+    assert.match(host.querySelector(".work-item-sidebar").textContent, /Parent epic/);
+    assert.match(host.querySelector(".work-item-sidebar").textContent, /Another issue/);
+});
+
+test("child task overflow retains navigation and cross-project context", needsDom, () => {
+    const children = Array.from({ length: 8 }, (_, index) => ({
+        id: 100 + index, kind: "work-item", label: `Task ${100 + index}`,
+        title: `Task title ${index}`, state: "Active", project: "Other Project",
+    }));
+    let opened;
+    const host = render(workItem({ relations: [{ name: "Children", links: children }] }), {
+        onOpenWorkItem(item) { opened = item; },
+    });
+    const card = host.querySelector(".child-work-section");
+    assert.ok(card);
+    assert.equal(card.querySelector(".primer-counter").textContent, "8");
+    assert.equal(card.querySelector(":scope > .relation-list").children.length, 6);
+    assert.equal(card.querySelector("summary").textContent, "Show 2 more");
+    card.querySelector("details").open = true;
+    card.querySelector(".relation-list-overflow button").click();
+    assert.equal(opened, children[6]);
+    assert.equal(opened.project, "Other Project");
+    assert.equal(host.querySelector(".work-item-sidebar"), null);
+});
+
+test("child work items retain custom types and unresolved links", needsDom, () => {
+    const host = render(workItem({ relations: [{ name: "Children", links: [
+        { id: 61, label: "Checklist 61", title: "Custom child", kind: "work-item", webUrl: "https://dev.azure.com/example/Widgets/_workitems/edit/61" },
+        { id: 62, label: "Work item 62", title: "", kind: "work-item", webUrl: "" },
+    ] }] }));
+    const card = host.querySelector(".child-work-section");
+    assert.ok(card);
+    assert.match(card.textContent, /Checklist 61 Custom child/);
+    assert.equal(card.querySelector("a").href, "https://dev.azure.com/example/Widgets/_workitems/edit/61");
+    assert.match(card.textContent, /Work item 62/);
+    assert.equal(card.querySelectorAll(".relation-row").length, 2);
+});
+
+test("work items without children omit the child tasks section", needsDom, () => {
+    const host = render(workItem({ type: "Issue", relations: [{ name: "Children", links: [] }] }));
+    assert.equal(host.querySelector(".child-work-section"), null);
+});
+
 test("delegate menus have unique document ids across simultaneous work-item renders", needsDom, () => {
     const first = render(workItem(), { onDelegateLocal() {} });
     const second = render(workItem(), { onDelegateLocal() {} });
