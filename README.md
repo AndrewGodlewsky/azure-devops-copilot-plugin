@@ -2,6 +2,8 @@
 
 This is [Andrew Godlewsky's Azure DevOps Copilot Plugin](https://github.com/AndrewGodlewsky/azure-devops-copilot-plugin). It brings your Azure Boards work into the [GitHub Copilot App](https://github.com/apps/desktop) so you can review and act on it without leaving your Copilot session. Follow the installation steps below to install this fork and receive its updates.
 
+Based on the [Microsoft Azure DevOps Copilot Plugin](https://github.com/microsoft/azure-devops-copilot-plugin), licensed under the [MIT License](LICENSE.txt). This fork is independently maintained by Andrew Godlewsky.
+
 > [!WARNING]
 > This is a preview release. It is not supported for production workloads and may change without notice.
 
@@ -111,6 +113,10 @@ node scripts/workspace-smoke.mjs
 
 Set `SMOKE_OUTPUT` to choose a screenshot folder; the default `.workspace-smoke` folder is ignored by Git. This test covers personal defaults, explicit wider search and reset, creation and retry, draft recovery, conflict review, screenshot uploads, board moves, assignment inside item editing, Send to chat feedback, and task suggestion review, editing, selection and creation while preserving unsaved story edits. It does not sign in to Azure DevOps or modify live work items. HTTP tests verify chat requests and proposal callbacks against a stub Copilot session; confirming the complete conversation and task-creation flow in the installed Copilot App requires a live host session.
 
-## Upstream attribution
+## License and upstream attribution
 
-This project is a fork of the [Microsoft Azure DevOps Copilot Plugin](https://github.com/microsoft/azure-devops-copilot-plugin). That link is provided for attribution; the installation source for this fork is Andrew's repository listed above.
+Credit for the original project goes to Microsoft and the contributors to the [Microsoft Azure DevOps Copilot Plugin](https://github.com/microsoft/azure-devops-copilot-plugin). Andrew Godlewsky maintains the changes in this fork, which is distributed under the MIT License.
+
+The original **Copyright (c) Microsoft Corporation.** notice and the complete MIT permission and warranty disclaimer are preserved unchanged in [LICENSE.txt](LICENSE.txt). When redistributing copies or substantial portions of this software, retain that license file and its notices.
+
+The upstream link is provided for attribution. Use Andrew's repository in the installation instructions to install this independently maintained fork.
